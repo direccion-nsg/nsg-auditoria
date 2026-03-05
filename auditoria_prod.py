@@ -40,24 +40,10 @@ def leer_datos_seguro(nombre_hoja, fila_encabezado=0):
         hoja = libro.worksheet(nombre_hoja)
         datos = hoja.get_all_values()
         if len(datos) <= fila_encabezado: return pd.DataFrame()
-        nombres = datos[fila_encabezado]
-        df = pd.DataFrame(datos[fila_encabezado+1:])
-        df.columns = [str(n).strip().upper() if n else f"COL_{i}" for i, n in enumerate(nombres)]
-        for col in df.columns: df[col] = df[col].astype(str).str.strip()
+        nombres = [str(n).strip().upper() for n in datos[fila_encabezado]]
+        df = pd.DataFrame(datos[fila_encabezado+1:], columns=nombres)
         return df
     except: return pd.DataFrame()
-
-# Función para encontrar columnas sin importar acentos
-def encontrar_columna(df, nombre_buscado):
-    import unicodedata
-    def normalizar(texto):
-        return "".join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn').upper().strip()
-    
-    objetivo = normalizar(nombre_buscado)
-    for col in df.columns:
-        if normalizar(col) == objetivo:
-            return col
-    return None
 
 # --- 2. INTERFAZ ---
 st.set_page_config(layout="wide", page_title="NSG Auditoría", page_icon="🛡️")
@@ -85,16 +71,6 @@ df_programa = leer_datos_seguro("PROGRAMA", 1)
 df_bdd_raw = leer_datos_seguro("BDD", 0)
 df_auditorias = leer_datos_seguro("AUDITAR", 0)
 
-# Identificar columnas clave en BDD
-col_area_bdd = encontrar_columna(df_bdd_raw, "AREA")
-col_pieza_bdd = encontrar_columna(df_bdd_raw, "PIEZA")
-col_sub_bdd = encontrar_columna(df_bdd_raw, "SUB PROCESO")
-
-if not df_bdd_raw.empty:
-    # Estatus suele ser la 5ta columna (index 4)
-    if len(df_bdd_raw.columns) > 4:
-        df_bdd_raw = df_bdd_raw[df_bdd_raw[df_bdd_raw.columns[4]].str.upper() == 'TRUE'].copy()
-
 # --- 3. SIDEBAR ---
 with st.sidebar:
     if os.path.exists(LOGO_FILENAME):
@@ -104,18 +80,16 @@ with st.sidebar:
     st.markdown("### ⚙️ Ajustes de Turno")
     
     areas_list = []
-    if not df_bdd_raw.empty and col_area_bdd: 
-        areas_list.extend(df_bdd_raw[col_area_bdd].unique().tolist())
-    if not df_programa.empty:
-        col_area_prog = encontrar_columna(df_programa, "AREA")
-        if col_area_prog: areas_list.extend(df_programa[col_area_prog].unique().tolist())
+    # Usamos nombres genéricos porque al leer forzamos MAYÚSCULAS
+    if not df_bdd_raw.empty: areas_list.extend(df_bdd_raw['ÁREA'].tolist() if 'ÁREA' in df_bdd_raw.columns else (df_bdd_raw['AREA'].tolist() if 'AREA' in df_bdd_raw.columns else []))
+    if not df_programa.empty: areas_list.extend(df_programa['ÁREA'].tolist() if 'ÁREA' in df_programa.columns else (df_programa['AREA'].tolist() if 'AREA' in df_programa.columns else []))
     
-    lista_areas = sorted(list(set([a for a in areas_list if a and str(a).strip() != ""])))
+    lista_areas = sorted(list(set([str(a).strip() for a in areas_list if a])))
 
     fecha_dt = st.date_input("📅 Fecha", datetime.now())
     fecha_sel = fecha_dt.strftime('%d/%m/%Y')
     
-    area_sel = st.selectbox("📍 Área", lista_areas if lista_areas else ["MOLDEO", "ENSAMBLE", "CORAZONES"])
+    area_sel = st.selectbox("📍 Área", lista_areas if lista_areas else ["MOLDEO", "ENSAMBLE"])
     cortes_dict = {"11:00 AM (3h)": 3, "14:00 PM (6h)": 6, "17:00 PM (9h)": 9}
     corte_sel = st.selectbox("⏱️ Corte", list(cortes_dict.keys()))
     horas_acum = cortes_dict[corte_sel]
@@ -123,8 +97,9 @@ with st.sidebar:
     st.divider()
     st.subheader("📋 Plan del Día")
     df_plan_dia = pd.DataFrame()
-    if not df_programa.empty and col_area_prog:
-        df_plan_dia = df_programa[(df_programa['FECHA'] == fecha_sel) & (df_programa[col_area_prog] == area_sel)].copy()
+    col_a_p = 'ÁREA' if 'ÁREA' in df_programa.columns else 'AREA'
+    if not df_programa.empty and col_a_p in df_programa.columns:
+        df_plan_dia = df_programa[(df_programa['FECHA'] == fecha_sel) & (df_programa[col_a_p] == area_sel)].copy()
         if not df_plan_dia.empty:
             st.dataframe(df_plan_dia[['PIEZA', 'TOTAL']], hide_index=True)
 
@@ -135,9 +110,9 @@ avance_global = 0
 df_resumen_final = pd.DataFrame()
 
 if not df_plan_dia.empty and not df_auditorias.empty:
-    col_area_aud = encontrar_columna(df_auditorias, "AREA")
-    if col_area_aud:
-        df_aud_hoy = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias[col_area_aud] == area_sel)].copy()
+    col_a_aud = 'ÁREA' if 'ÁREA' in df_auditorias.columns else 'AREA'
+    if col_a_aud in df_auditorias.columns:
+        df_aud_hoy = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias[col_a_aud] == area_sel)].copy()
         if not df_aud_hoy.empty:
             df_aud_hoy['REAL'] = pd.to_numeric(df_aud_hoy['REAL'], errors='coerce').fillna(0)
             df_max_real = df_aud_hoy.groupby('PIEZA')['REAL'].max().reset_index()
@@ -166,24 +141,19 @@ st.markdown("<div class='step-header'>🚀 CAPTURA DE AUDITORÍA</div>", unsafe_
 col_a, col_b = st.columns(2)
 with col_a:
     st.markdown("##### **Paso 1: Selección**")
-    piezas_opciones = []
-    if col_area_bdd and col_pieza_bdd:
-        piezas_opciones = df_bdd_raw[df_bdd_raw[col_area_bdd] == area_sel][col_pieza_bdd].unique().tolist()
-    
+    col_a_b = 'ÁREA' if 'ÁREA' in df_bdd_raw.columns else 'AREA'
+    col_p_b = 'PIEZA'
+    piezas_opciones = df_bdd_raw[df_bdd_raw[col_a_b] == area_sel][col_p_b].unique().tolist() if not df_bdd_raw.empty else []
     pieza_sel = st.selectbox("Seleccione Pieza", piezas_opciones if piezas_opciones else ["SIN DATOS"])
     
-    df_sub_base = pd.DataFrame()
-    if col_area_bdd and col_pieza_bdd:
-        df_sub_base = df_bdd_raw[(df_bdd_raw[col_pieza_bdd] == pieza_sel) & (df_bdd_raw[col_area_bdd] == area_sel)].copy()
-    
+    df_sub_base = df_bdd_raw[(df_bdd_raw[col_p_b] == pieza_sel) & (df_bdd_raw[col_a_b] == area_sel)].copy() if not df_bdd_raw.empty else pd.DataFrame()
     sub_sel = None
-    if not df_sub_base.empty and col_sub_bdd:
+    if not df_sub_base.empty:
+        col_s_b = 'SUB PROCESO' if 'SUB PROCESO' in df_sub_base.columns else 'SUBPROCESO'
         reportados = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias['CORTE'] == corte_sel) & (df_auditorias['PIEZA'] == pieza_sel)]['SUBPROCESO'].tolist() if not df_auditorias.empty else []
-        opciones = [s for s in df_sub_base[col_sub_bdd].tolist() if s not in reportados]
-        if opciones:
-            sub_sel = st.selectbox("Sub-proceso", opciones)
-        else:
-            st.success("✅ Completado para este corte.")
+        opciones = [s for s in df_sub_base[col_s_b].tolist() if s not in reportados]
+        if opciones: sub_sel = st.selectbox("Sub-proceso", opciones)
+        else: st.success("✅ Completado.")
 
 with col_b:
     st.markdown("##### **Paso 2: Condiciones**")
@@ -198,10 +168,10 @@ if sub_sel:
     cc1, cc2, cc3 = st.columns([1.5, 1, 1])
     with cc1:
         real_in = st.number_input("CANTIDAD REAL ACUMULADA", min_value=0, key=f"real_{f_id}")
-        notas_aud = st.text_input("Observaciones", key=f"note_{f_id}", placeholder="Notas...")
+        notas_aud = st.text_input("Observaciones", key=f"note_{f_id}")
     with cc2:
-        col_pzh = encontrar_columna(df_sub_base, "PZ X H")
-        pz_h_p = float(df_sub_base[df_sub_base[col_sub_bdd] == sub_sel][col_pzh].iloc[0]) if col_pzh else 0
+        col_pzh = 'PZ X H' if 'PZ X H' in df_sub_base.columns else 'PZH'
+        pz_h_p = float(df_sub_base[df_sub_base[col_s_b] == sub_sel][col_pzh].iloc[0]) if col_pzh in df_sub_base.columns else 0
         tiempo_ef = max(0, horas_acum - (minutos_p/60))
         meta_e = int((pz_h_p * tiempo_ef) * num_ops)
         dif = real_in - meta_e
@@ -229,9 +199,7 @@ st.divider()
 c_t1, c_t2 = st.columns(2)
 with c_t1:
     st.markdown("##### 📖 Capacidades")
-    if not df_sub_base.empty and col_sub_bdd and col_pzh:
-        st.table(df_sub_base[[col_sub_bdd, col_pzh]])
+    if not df_sub_base.empty: st.table(df_sub_base[[col_s_b, col_pzh]])
 with c_t2:
     st.markdown("##### 📊 Avance Real")
-    if not df_resumen_final.empty:
-        st.dataframe(df_resumen_final, hide_index=True, use_container_width=True)
+    if not df_resumen_final.empty: st.dataframe(df_resumen_final, hide_index=True)
