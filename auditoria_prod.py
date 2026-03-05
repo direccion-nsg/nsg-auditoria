@@ -6,6 +6,7 @@ from datetime import datetime
 import plotly.graph_objects as go
 import time
 import os
+import pytz
 
 # --- 1. CONFIGURACIÓN TÉCNICA ---
 JSON_FILE = 'creds_nsg.json' 
@@ -184,14 +185,36 @@ if sub_sel:
         st.metric("Diferencia", f"{dif} pzs", delta=dif)
     with cc3:
         st.write("")
-        if st.button("💾 GUARDAR REGISTRO"):
-            try:
-                with st.spinner("Transmitiendo..."):
-                    libro_actual = conectar_libro()
-                    fila = [fecha_sel, area_sel, corte_sel, pieza_sel, sub_sel, int(real_in), meta_e, dif, int(num_ops), f"[{motivo_p}-{minutos_p}min] {notas_aud}", datetime.now().strftime('%H:%M:%S')]
-                    libro_actual.worksheet("AUDITAR").append_row(fila)
-                
-                st.toast(f"✅ ¡Guardado!", icon="🚀")
+       # --- Al inicio de tu código, con los otros imports ---
+import pytz 
+
+# --- Dentro del botón de GUARDAR REGISTRO ---
+if st.button("💾 GUARDAR REGISTRO"):
+    try:
+        with st.spinner("Transmitiendo..."):
+            libro_actual = conectar_libro()
+            
+            # --- CORRECCIÓN DE HORA MÉXICO ---
+            zona_mx = pytz.timezone('America/Mexico_City')
+            hora_mx = datetime.now(zona_mx).strftime('%H:%M:%S')
+            
+            fila = [
+                fecha_sel, 
+                area_sel, 
+                corte_sel, 
+                pieza_sel, 
+                sub_sel, 
+                int(real_in), 
+                meta_e, 
+                dif, 
+                int(num_ops), 
+                f"[{motivo_p}-{minutos_p}min] {notas_aud}", 
+                hora_mx  # <--- Aquí ya va la hora real de México
+            ]
+            libro_actual.worksheet("AUDITAR").append_row(fila)
+        
+        st.toast(f"✅ ¡Guardado a las {hora_mx}!", icon="🚀")
+        # ... resto del código igual
                 st.cache_data.clear()
                 st.session_state.form_id += 1 
                 time.sleep(0.5)
@@ -208,4 +231,5 @@ with c_t1:
 with c_t2:
     st.markdown("##### 📊 Avance de Auditoría Real")
     if not df_resumen_final.empty:
+
         st.dataframe(df_resumen_final, hide_index=True, use_container_width=True)
