@@ -47,6 +47,18 @@ def leer_datos_seguro(nombre_hoja, fila_encabezado=0):
         return df
     except: return pd.DataFrame()
 
+# Función para encontrar columnas sin importar acentos
+def encontrar_columna(df, nombre_buscado):
+    import unicodedata
+    def normalizar(texto):
+        return "".join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn').upper().strip()
+    
+    objetivo = normalizar(nombre_buscado)
+    for col in df.columns:
+        if normalizar(col) == objetivo:
+            return col
+    return None
+
 # --- 2. INTERFAZ ---
 st.set_page_config(layout="wide", page_title="NSG Auditoría", page_icon="🛡️")
 
@@ -73,9 +85,15 @@ df_programa = leer_datos_seguro("PROGRAMA", 1)
 df_bdd_raw = leer_datos_seguro("BDD", 0)
 df_auditorias = leer_datos_seguro("AUDITAR", 0)
 
+# Identificar columnas clave en BDD
+col_area_bdd = encontrar_columna(df_bdd_raw, "AREA")
+col_pieza_bdd = encontrar_columna(df_bdd_raw, "PIEZA")
+col_sub_bdd = encontrar_columna(df_bdd_raw, "SUB PROCESO")
+
 if not df_bdd_raw.empty:
-    col_estatus = df_bdd_raw.columns[4]
-    df_bdd_raw = df_bdd_raw[df_bdd_raw[col_estatus].str.upper() == 'TRUE'].copy()
+    # Estatus suele ser la 5ta columna (index 4)
+    if len(df_bdd_raw.columns) > 4:
+        df_bdd_raw = df_bdd_raw[df_bdd_raw[df_bdd_raw.columns[4]].str.upper() == 'TRUE'].copy()
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
@@ -85,16 +103,19 @@ with st.sidebar:
     st.divider()
     st.markdown("### ⚙️ Ajustes de Turno")
     
-    # Unión de áreas de BDD y PROGRAMA para que no falte ninguna (Corazones, El Plan, etc.)
     areas_list = []
-    if not df_bdd_raw.empty: areas_list.extend(df_bdd_raw['ÁREA'].unique().tolist())
-    if not df_programa.empty: areas_list.extend(df_programa['ÁREA'].unique().tolist())
+    if not df_bdd_raw.empty and col_area_bdd: 
+        areas_list.extend(df_bdd_raw[col_area_bdd].unique().tolist())
+    if not df_programa.empty:
+        col_area_prog = encontrar_columna(df_programa, "AREA")
+        if col_area_prog: areas_list.extend(df_programa[col_area_prog].unique().tolist())
+    
     lista_areas = sorted(list(set([a for a in areas_list if a and str(a).strip() != ""])))
 
     fecha_dt = st.date_input("📅 Fecha", datetime.now())
     fecha_sel = fecha_dt.strftime('%d/%m/%Y')
     
-    area_sel = st.selectbox("📍 Área", lista_areas)
+    area_sel = st.selectbox("📍 Área", lista_areas if lista_areas else ["MOLDEO", "ENSAMBLE", "CORAZONES"])
     cortes_dict = {"11:00 AM (3h)": 3, "14:00 PM (6h)": 6, "17:00 PM (9h)": 9}
     corte_sel = st.selectbox("⏱️ Corte", list(cortes_dict.keys()))
     horas_acum = cortes_dict[corte_sel]
@@ -102,8 +123,8 @@ with st.sidebar:
     st.divider()
     st.subheader("📋 Plan del Día")
     df_plan_dia = pd.DataFrame()
-    if not df_programa.empty:
-        df_plan_dia = df_programa[(df_programa['FECHA'] == fecha_sel) & (df_programa['ÁREA'] == area_sel)].copy()
+    if not df_programa.empty and col_area_prog:
+        df_plan_dia = df_programa[(df_programa['FECHA'] == fecha_sel) & (df_programa[col_area_prog] == area_sel)].copy()
         if not df_plan_dia.empty:
             st.dataframe(df_plan_dia[['PIEZA', 'TOTAL']], hide_index=True)
 
@@ -114,16 +135,18 @@ avance_global = 0
 df_resumen_final = pd.DataFrame()
 
 if not df_plan_dia.empty and not df_auditorias.empty:
-    df_aud_hoy = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias['ÁREA'] == area_sel)].copy()
-    if not df_aud_hoy.empty:
-        df_aud_hoy['REAL'] = pd.to_numeric(df_aud_hoy['REAL'], errors='coerce').fillna(0)
-        df_max_real = df_aud_hoy.groupby('PIEZA')['REAL'].max().reset_index()
-        df_metas = df_plan_dia[['PIEZA', 'TOTAL']].copy()
-        df_metas['TOTAL'] = pd.to_numeric(df_metas['TOTAL'], errors='coerce').fillna(1)
-        df_final = pd.merge(df_metas, df_max_real, on='PIEZA', how='left').fillna(0)
-        df_final['% AVANCE REAL'] = (df_final['REAL'] / df_final['TOTAL'] * 100).clip(upper=100)
-        df_resumen_final = df_final[['PIEZA', '% AVANCE REAL']]
-        avance_global = round(df_final['% AVANCE REAL'].mean(), 1)
+    col_area_aud = encontrar_columna(df_auditorias, "AREA")
+    if col_area_aud:
+        df_aud_hoy = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias[col_area_aud] == area_sel)].copy()
+        if not df_aud_hoy.empty:
+            df_aud_hoy['REAL'] = pd.to_numeric(df_aud_hoy['REAL'], errors='coerce').fillna(0)
+            df_max_real = df_aud_hoy.groupby('PIEZA')['REAL'].max().reset_index()
+            df_metas = df_plan_dia[['PIEZA', 'TOTAL']].copy()
+            df_metas['TOTAL'] = pd.to_numeric(df_metas['TOTAL'], errors='coerce').fillna(1)
+            df_final = pd.merge(df_metas, df_max_real, on='PIEZA', how='left').fillna(0)
+            df_final['% AVANCE REAL'] = (df_final['REAL'] / df_final['TOTAL'] * 100).clip(upper=100)
+            df_resumen_final = df_final[['PIEZA', '% AVANCE REAL']]
+            avance_global = round(df_final['% AVANCE REAL'].mean(), 1)
 
 c_g, c_b = st.columns([1, 2])
 with c_g:
@@ -143,17 +166,24 @@ st.markdown("<div class='step-header'>🚀 CAPTURA DE AUDITORÍA</div>", unsafe_
 col_a, col_b = st.columns(2)
 with col_a:
     st.markdown("##### **Paso 1: Selección**")
-    # Mostrar piezas filtradas por el área seleccionada
-    piezas_opciones = df_bdd_raw[df_bdd_raw['ÁREA'] == area_sel]['PIEZA'].unique().tolist()
-    pieza_sel = st.selectbox("Seleccione Pieza", piezas_opciones)
+    piezas_opciones = []
+    if col_area_bdd and col_pieza_bdd:
+        piezas_opciones = df_bdd_raw[df_bdd_raw[col_area_bdd] == area_sel][col_pieza_bdd].unique().tolist()
     
-    df_sub_base = df_bdd_raw[(df_bdd_raw['PIEZA'] == pieza_sel) & (df_bdd_raw['ÁREA'] == area_sel)].copy()
-    if not df_sub_base.empty:
+    pieza_sel = st.selectbox("Seleccione Pieza", piezas_opciones if piezas_opciones else ["SIN DATOS"])
+    
+    df_sub_base = pd.DataFrame()
+    if col_area_bdd and col_pieza_bdd:
+        df_sub_base = df_bdd_raw[(df_bdd_raw[col_pieza_bdd] == pieza_sel) & (df_bdd_raw[col_area_bdd] == area_sel)].copy()
+    
+    sub_sel = None
+    if not df_sub_base.empty and col_sub_bdd:
         reportados = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias['CORTE'] == corte_sel) & (df_auditorias['PIEZA'] == pieza_sel)]['SUBPROCESO'].tolist() if not df_auditorias.empty else []
-        opciones = [s for s in df_sub_base['SUB PROCESO'].tolist() if s not in reportados]
-        sub_sel = st.selectbox("Sub-proceso", opciones) if opciones else None
-        if not opciones: st.success("✅ Completado para este corte.")
-    else: sub_sel = None
+        opciones = [s for s in df_sub_base[col_sub_bdd].tolist() if s not in reportados]
+        if opciones:
+            sub_sel = st.selectbox("Sub-proceso", opciones)
+        else:
+            st.success("✅ Completado para este corte.")
 
 with col_b:
     st.markdown("##### **Paso 2: Condiciones**")
@@ -170,8 +200,8 @@ if sub_sel:
         real_in = st.number_input("CANTIDAD REAL ACUMULADA", min_value=0, key=f"real_{f_id}")
         notas_aud = st.text_input("Observaciones", key=f"note_{f_id}", placeholder="Notas...")
     with cc2:
-        cap_row = df_sub_base[df_sub_base['SUB PROCESO'] == sub_sel]
-        pz_h_p = float(cap_row['PZ X H'].iloc[0]) if not cap_row.empty else 0
+        col_pzh = encontrar_columna(df_sub_base, "PZ X H")
+        pz_h_p = float(df_sub_base[df_sub_base[col_sub_bdd] == sub_sel][col_pzh].iloc[0]) if col_pzh else 0
         tiempo_ef = max(0, horas_acum - (minutos_p/60))
         meta_e = int((pz_h_p * tiempo_ef) * num_ops)
         dif = real_in - meta_e
@@ -199,8 +229,8 @@ st.divider()
 c_t1, c_t2 = st.columns(2)
 with c_t1:
     st.markdown("##### 📖 Capacidades")
-    if 'df_sub_base' in locals() and not df_sub_base.empty:
-        st.table(df_sub_base[['SUB PROCESO', 'PZ X H']])
+    if not df_sub_base.empty and col_sub_bdd and col_pzh:
+        st.table(df_sub_base[[col_sub_bdd, col_pzh]])
 with c_t2:
     st.markdown("##### 📊 Avance Real")
     if not df_resumen_final.empty:
