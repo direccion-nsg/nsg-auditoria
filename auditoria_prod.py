@@ -6,6 +6,7 @@ from datetime import datetime
 import plotly.graph_objects as go
 import time
 import os
+import pytz  # <--- AGREGADO PARA EL HORARIO
 
 # --- 1. CONFIGURACIÓN TÉCNICA ---
 JSON_FILE = 'creds_nsg.json' 
@@ -163,7 +164,6 @@ with col_b:
     c_op, c_pa = st.columns(2)
     num_ops = c_op.number_input("Operadores", min_value=1, value=1, key=f"ops_{f_id}", help="Cantidad de personas operando en este sub-proceso.")
     minutos_p = c_pa.number_input("Min. Paro", min_value=0, key=f"min_{f_id}", help="Tiempo total que la máquina o proceso estuvo detenido.")
-    # AYUDA AGREGADA AQUÍ
     motivo_p = st.selectbox("Motivo de Paro", MOTIVOS_PARO, key=f"mot_{f_id}", help="Selecciona la causa principal de la detención en este corte.")
 
 if sub_sel:
@@ -171,7 +171,6 @@ if sub_sel:
     cc1, cc2, cc3 = st.columns([1.5, 1, 1])
     with cc1:
         real_in = st.number_input("CANTIDAD REAL ACUMULADA", min_value=0, key=f"real_{f_id}", help="Ingrese el total de piezas buenas acumuladas al momento del corte.")
-        # AYUDA AGREGADA AQUÍ
         notas_aud = st.text_input("Observaciones", key=f"note_{f_id}", placeholder="Notas técnicas...", help="Agrega detalles adicionales o justifica desviaciones importantes.")
     with cc2:
         cap_row = df_sub_base[df_sub_base['SUB PROCESO'] == sub_sel]
@@ -188,10 +187,15 @@ if sub_sel:
             try:
                 with st.spinner("Transmitiendo..."):
                     libro_actual = conectar_libro()
-                    fila = [fecha_sel, area_sel, corte_sel, pieza_sel, sub_sel, int(real_in), meta_e, dif, int(num_ops), f"[{motivo_p}-{minutos_p}min] {notas_aud}", datetime.now().strftime('%H:%M:%S')]
+                    
+                    # --- CORRECCIÓN HORA MÉXICO ---
+                    zona_mx = pytz.timezone('America/Mexico_City')
+                    hora_mx = datetime.now(zona_mx).strftime('%H:%M:%S')
+                    
+                    fila = [fecha_sel, area_sel, corte_sel, pieza_sel, sub_sel, int(real_in), meta_e, dif, int(num_ops), f"[{motivo_p}-{minutos_p}min] {notas_aud}", hora_mx]
                     libro_actual.worksheet("AUDITAR").append_row(fila)
                 
-                st.toast(f"✅ ¡Guardado!", icon="🚀")
+                st.toast(f"✅ ¡Guardado a las {hora_mx}!", icon="🚀")
                 st.cache_data.clear()
                 st.session_state.form_id += 1 
                 time.sleep(0.5)
@@ -209,4 +213,3 @@ with c_t2:
     st.markdown("##### 📊 Avance de Auditoría Real")
     if not df_resumen_final.empty:
         st.dataframe(df_resumen_final, hide_index=True, use_container_width=True)
-
