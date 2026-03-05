@@ -6,7 +6,7 @@ from datetime import datetime
 import plotly.graph_objects as go
 import time
 import os
-import pytz
+import pytz  # Para la hora de México
 
 # --- 1. CONFIGURACIÓN TÉCNICA ---
 JSON_FILE = 'creds_nsg.json' 
@@ -76,6 +76,7 @@ df_programa = leer_datos_seguro("PROGRAMA", 1)
 df_bdd_raw = leer_datos_seguro("BDD", 0)
 df_auditorias = leer_datos_seguro("AUDITAR", 0)
 
+# Limpieza de BDD (Solo activos)
 if not df_bdd_raw.empty:
     col_estatus = df_bdd_raw.columns[4]
     df_bdd_raw = df_bdd_raw[df_bdd_raw[col_estatus].str.upper() == 'TRUE'].copy()
@@ -87,13 +88,15 @@ with st.sidebar:
     
     st.divider()
     st.markdown("### ⚙️ Ajustes de Turno")
-    fecha_dt = st.date_input("📅 Fecha", datetime.now(), help="Día de producción.")
-    fecha_sel = fecha_dt.strftime('%d/%m/%Y')
     
-    if not df_programa.empty and 'ÁREA' in df_programa.columns:
-        lista_areas = [a for a in df_programa['ÁREA'].unique().tolist() if a and a.upper() != "ÁREA"]
+    # Obtener áreas directamente de la BDD para que no falte ninguna
+    if not df_bdd_raw.empty and 'ÁREA' in df_bdd_raw.columns:
+        lista_areas = sorted([a for a in df_bdd_raw['ÁREA'].unique().tolist() if a and a != ""])
     else:
         lista_areas = ["MOLDEO", "ENSAMBLE", "ACABADO"]
+
+    fecha_dt = st.date_input("📅 Fecha", datetime.now(), help="Día de producción.")
+    fecha_sel = fecha_dt.strftime('%d/%m/%Y')
     
     area_sel = st.selectbox("📍 Área", lista_areas, help="Departamento a auditar.")
     cortes_dict = {"11:00 AM (3h)": 3, "14:00 PM (6h)": 6, "17:00 PM (9h)": 9}
@@ -150,86 +153,7 @@ with col_a:
     st.markdown("##### **Paso 1: Selección**")
     piezas_finales = df_plan_dia['PIEZA'].unique().tolist() if not df_plan_dia.empty else (df_bdd_raw['PIEZA'].unique().tolist() if not df_bdd_raw.empty else [])
     pieza_sel = st.selectbox("Seleccione Pieza", piezas_finales, help="Producto auditado.")
-    df_sub_base = df_bdd_raw[(df_bdd_raw['PIEZA'] == pieza_sel) & (df_bdd_raw['PROCESO'] == area_sel)].copy()
+    df_sub_base = df_bdd_raw[(df_bdd_raw['PIEZA'] == pieza_sel) & (df_bdd_raw['ÁREA'] == area_sel)].copy()
+    
     if not df_sub_base.empty:
-        reportados = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias['CORTE'] == corte_sel) & (df_auditorias['PIEZA'] == pieza_sel)]['SUBPROCESO'].tolist() if not df_auditorias.empty else []
-        opciones = [s for s in df_sub_base['SUB PROCESO'].tolist() if s not in reportados]
-        sub_sel = st.selectbox("Sub-proceso", opciones, help="Fase de la pieza.") if opciones else None
-        if not opciones: st.success("✅ Proceso completado.")
-    else: sub_sel = None
-
-with col_b:
-    st.markdown("##### **Paso 2: Condiciones**")
-    f_id = st.session_state.form_id
-    c_op, c_pa = st.columns(2)
-    num_ops = c_op.number_input("Operadores", min_value=1, value=1, key=f"ops_{f_id}", help="Cantidad de personas operando en este sub-proceso.")
-    minutos_p = c_pa.number_input("Min. Paro", min_value=0, key=f"min_{f_id}", help="Tiempo total que la máquina o proceso estuvo detenido.")
-    # AYUDA AGREGADA AQUÍ
-    motivo_p = st.selectbox("Motivo de Paro", MOTIVOS_PARO, key=f"mot_{f_id}", help="Selecciona la causa principal de la detención en este corte.")
-
-if sub_sel:
-    st.markdown("##### **Paso 3: Cantidades**")
-    cc1, cc2, cc3 = st.columns([1.5, 1, 1])
-    with cc1:
-        real_in = st.number_input("CANTIDAD REAL ACUMULADA", min_value=0, key=f"real_{f_id}", help="Ingrese el total de piezas acumuladas al momento del corte.")
-        # AYUDA AGREGADA AQUÍ
-        notas_aud = st.text_input("Observaciones", key=f"note_{f_id}", placeholder="Notas técnicas...", help="Agrega detalles adicionales o justifica desviaciones importantes.")
-    with cc2:
-        cap_row = df_sub_base[df_sub_base['SUB PROCESO'] == sub_sel]
-        pz_h_p = float(cap_row['PZ X H'].iloc[0]) if not cap_row.empty else 0
-        h_c = horas_acum if 'horas_acum' in locals() else 3
-        tiempo_ef = max(0, h_c - (minutos_p/60))
-        meta_e = int((pz_h_p * tiempo_ef) * num_ops)
-        dif = real_in - meta_e
-        st.metric("Meta Teórica", f"{meta_e} pzs")
-        st.metric("Diferencia", f"{dif} pzs", delta=dif)
-    with cc3:
-        st.write("")
-       # --- Al inicio de tu código, con los otros imports ---
-import pytz 
-
-# --- Dentro del botón de GUARDAR REGISTRO ---
-if st.button("💾 GUARDAR REGISTRO"):
-    try:
-        with st.spinner("Transmitiendo..."):
-            libro_actual = conectar_libro()
-            
-            # --- CORRECCIÓN DE HORA MÉXICO ---
-            zona_mx = pytz.timezone('America/Mexico_City')
-            hora_mx = datetime.now(zona_mx).strftime('%H:%M:%S')
-            
-            fila = [
-                fecha_sel, 
-                area_sel, 
-                corte_sel, 
-                pieza_sel, 
-                sub_sel, 
-                int(real_in), 
-                meta_e, 
-                dif, 
-                int(num_ops), 
-                f"[{motivo_p}-{minutos_p}min] {notas_aud}", 
-                hora_mx  # <--- Aquí ya va la hora real de México
-            ]
-            libro_actual.worksheet("AUDITAR").append_row(fila)
-        
-        st.toast(f"✅ ¡Guardado a las {hora_mx}!", icon="🚀")
-        # ... resto del código igual
-                st.cache_data.clear()
-                st.session_state.form_id += 1 
-                time.sleep(0.5)
-                st.rerun()
-            except Exception as e: st.error(f"Error de red: {e}")
-
-# --- 6. TABLAS FINALES ---
-st.divider()
-c_t1, c_t2 = st.columns(2)
-with c_t1:
-    st.markdown("##### 📖 Capacidades (PZ x Hora)")
-    if 'df_sub_base' in locals() and not df_sub_base.empty:
-        st.table(df_sub_base[['SUB PROCESO', 'PZ X H']])
-with c_t2:
-    st.markdown("##### 📊 Avance de Auditoría Real")
-    if not df_resumen_final.empty:
-
-        st.dataframe(df_resumen_final, hide_index=True, use_container_width=True)
+        reportados = df_auditorias[(df_auditorias['FECHA'] == fecha_sel)
