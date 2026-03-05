@@ -209,3 +209,4 @@ with c_t2:
     st.markdown("##### 📊 Avance de Auditoría Real")
     if not df_resumen_final.empty:
         st.dataframe(df_resumen_final, hide_index=True, use_container_width=True)
+
