@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import time
 import os
 import pytz
+import numpy as np
 
 # --- 1. CONFIGURACIÓN TÉCNICA ---
 JSON_FILE = 'creds_nsg.json' 
@@ -43,239 +44,207 @@ def leer_datos_seguro(nombre_hoja, fila_encabezado=0):
         nombres = datos[fila_encabezado]
         df = pd.DataFrame(datos[fila_encabezado+1:])
         df.columns = [str(n).strip().upper() if n else f"COL_{i}" for i, n in enumerate(nombres)]
-        # Normalizamos los datos: quitar espacios extras
         for col in df.columns: df[col] = df[col].astype(str).str.strip()
         return df
     except: return pd.DataFrame()
 
-# --- 2. INTERFAZ Y ESTILO ---
-st.set_page_config(layout="wide", page_title="NSG Auditoría", page_icon="🛡️")
+def obtener_color_nsg(valor):
+    if valor >= 85: return "#2ecc71" # Verde
+    if valor >= 80: return "#f1c40f" # Amarillo
+    if valor >= 70: return "#e67e22" # Naranja
+    return "#E32B13" # Rojo
+
+# --- 2. INTERFAZ ---
+st.set_page_config(layout="wide", page_title="NSG Auditoría v2.9", page_icon="🛡️")
 
 st.markdown("""
     <style>
-    .stApp { background-color: #ffffff; }
-    .stButton>button {
-        background-color: #E32B13 !important;
-        color: white !important;
-        border-radius: 8px !important;
-        font-weight: bold !important;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    .stApp { background-color: #F8F9FA; }
+    .metric-card {
+        background: white; padding: 20px; border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        border-left: 5px solid #E32B13; text-align: center;
     }
-    .step-header {
-        color: #E32B13; font-weight: bold; border-bottom: 2px solid #E32B13;
-        margin-bottom: 15px; font-size: 20px;
+    .capture-container {
+        background: white; padding: 30px; border-radius: 15px;
+        border: 1px solid #E0E0E0; margin-top: 20px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.03);
+    }
+    .stButton>button {
+        width: 100%; background: linear-gradient(135deg, #E32B13 0%, #B2220F 100%) !important;
+        color: white !important; border-radius: 10px !important;
+        padding: 18px !important; font-weight: 700 !important; border: none !important;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# Inicializar sesión para evitar errores en VS Code
 if 'form_id' not in st.session_state: st.session_state.form_id = 0
 
-# Carga de datos inicial
-df_programa = leer_datos_seguro("PROGRAMA", 1) #
-df_bdd_raw = leer_datos_seguro("BDD", 0)       #
+# Carga de datos
+df_programa = leer_datos_seguro("PROGRAMA", 1)
+df_bdd_raw = leer_datos_seguro("BDD", 0)
 df_auditorias = leer_datos_seguro("AUDITAR", 0)
 
-# Filtrar BDD por Estatus Activo (Columna E)
+# Buscador de columna dinámico para SUB PRO CESO
+col_sub_actual = ""
 if not df_bdd_raw.empty:
-    df_bdd_raw = df_bdd_raw[df_bdd_raw['COL_4'].str.upper() == 'TRUE'].copy()
+    for c in df_bdd_raw.columns:
+        if 'SUB' in c and 'CESO' in c:
+            col_sub_actual = c
+            break
+    if not col_sub_actual: col_sub_actual = 'SUB PRO CESO'
+    if 'COL_4' in df_bdd_raw.columns:
+        df_bdd_raw = df_bdd_raw[df_bdd_raw['COL_4'].str.upper().str.contains('TRUE', na=False)].copy()
+    df_bdd_raw = df_bdd_raw[df_bdd_raw[col_sub_actual].str.len() > 1].copy()
+    df_bdd_raw = df_bdd_raw[df_bdd_raw[col_sub_actual] != '0'].copy()
 
-# --- 3. SIDEBAR DINÁMICO ---
+# Sidebar
 with st.sidebar:
     if os.path.exists(LOGO_FILENAME): st.image(LOGO_FILENAME, use_container_width=True)
-    st.divider()
-    fecha_dt = st.date_input("📅 Fecha", datetime.now())
+    st.markdown("<h3 style='text-align: center;'>CONTROL DE ACCESO</h3>", unsafe_allow_html=True)
+    fecha_dt = st.date_input("📅 FECHA", datetime.now(), help="Día de producción.")
     fecha_sel = fecha_dt.strftime('%d/%m/%Y')
     
-    # Obtener áreas directamente del Excel
     if not df_programa.empty and 'ÁREA' in df_programa.columns:
         lista_areas = [a for a in df_programa['ÁREA'].unique().tolist() if a and a.upper() != "ÁREA"]
     else:
         lista_areas = ["MOLDEO", "CORAZONES", "CORTE", "ENSAMBLE"]
     
-    area_sel = st.selectbox("📍 Área", lista_areas)
+    area_sel = st.selectbox("📍 ÁREA", lista_areas, help="Departamento auditado.")
     cortes_dict = {"11:00 AM (3h)": 3, "14:00 PM (6h)": 6, "17:00 PM (9h)": 9}
-    corte_sel = st.selectbox("⏱️ Corte", list(cortes_dict.keys()))
+    corte_sel = st.selectbox("⏱️ CORTE", list(cortes_dict.keys()), help="Corte de producción.")
     horas_acum = cortes_dict[corte_sel]
-    
+
     st.divider()
-    st.subheader("📋 Plan del Día")
+    st.markdown("### 📋 Plan del Día")
     df_plan_dia = pd.DataFrame()
     if not df_programa.empty:
-        # Filtramos por fecha y área
         df_plan_dia = df_programa[(df_programa['FECHA'] == fecha_sel) & (df_programa['ÁREA'] == area_sel)].copy()
-        
-        # Filtro especial para MOLDEO
         if area_sel.upper() == "MOLDEO" and not df_plan_dia.empty:
-            keywords = ["GENERAL", "VACIADO", "ADOBES"]
-            df_moldeo = df_plan_dia[df_plan_dia['PIEZA'].str.contains('|'.join(keywords), case=False, na=False)]
-            if not df_moldeo.empty: df_plan_dia = df_moldeo
-        
+            df_plan_dia = df_plan_dia[df_plan_dia['PIEZA'].str.contains('GENERAL|VACIADO|ADOBES', case=False, na=False)]
         if not df_plan_dia.empty:
             st.dataframe(df_plan_dia[['PIEZA', 'TOTAL']], hide_index=True)
 
-# --- 4. PANEL CENTRAL (CÁLCULO DE AVANCE REAL) ---
-# --- 4. PANEL CENTRAL (CÁLCULO Y GRÁFICA COMPARATIVA) ---
-st.markdown(f"## 🛡️ Panel de Auditoría: {area_sel}")
+# Encabezado Superior
+st.markdown(f"""
+    <div style='display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;'>
+        <h1 style='margin:0;'>🛡️ SISTEMA <span style='color:#E32B13;'>NSG</span> AUDITORÍA</h1>
+        <div style='background:#EEE; padding: 8px 20px; border-radius:25px; font-weight:bold; color:#333; border: 1px solid #CCC;'>
+            📍 ÁREA: {area_sel}
+        </div>
+    </div>
+""", unsafe_allow_html=True)
 
 avance_global = 0.0
 df_resumen_final = pd.DataFrame()
 
 if not df_plan_dia.empty and not df_bdd_raw.empty:
-    # 1. Mapear subprocesos de la BDD
-    df_sub_base_total = df_bdd_raw[df_bdd_raw['PROCESO'] == area_sel][['PIEZA', 'SUB PROCESO']].copy()
-    
-    # 2. Cruzar con el Plan del Día
+    df_sub_base_total = df_bdd_raw[df_bdd_raw['PROCESO'] == area_sel][['PIEZA', col_sub_actual]].copy()
     piezas_en_plan = df_plan_dia['PIEZA'].unique()
     df_base = df_sub_base_total[df_sub_base_total['PIEZA'].isin(piezas_en_plan)].copy()
     
     if not df_base.empty:
         df_base = pd.merge(df_base, df_plan_dia[['PIEZA', 'TOTAL']], on='PIEZA', how='left')
         df_base['TOTAL'] = pd.to_numeric(df_base['TOTAL'], errors='coerce').fillna(0)
-
-        # 3. Cruzar con lo auditado
         if not df_auditorias.empty:
             df_aud_hoy = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias['ÁREA'] == area_sel)].copy()
             df_aud_hoy['REAL'] = pd.to_numeric(df_aud_hoy['REAL'], errors='coerce').fillna(0)
             df_max_real = df_aud_hoy.groupby(['PIEZA', 'SUBPROCESO'])['REAL'].max().reset_index()
-            df_final = pd.merge(df_base, df_max_real, left_on=['PIEZA', 'SUB PROCESO'], right_on=['PIEZA', 'SUBPROCESO'], how='left').fillna(0)
+            df_final = pd.merge(df_base, df_max_real, left_on=['PIEZA', col_sub_actual], right_on=['PIEZA', 'SUBPROCESO'], how='left').fillna(0)
         else:
-            df_final = df_base.copy()
-            df_final['REAL'] = 0
+            df_final = df_base.assign(REAL=0)
 
-        # 4. Cálculo de %
         df_final['% REAL'] = (df_final['REAL'] / df_final['TOTAL'] * 100).clip(upper=100).fillna(0)
-        
-        df_resumen_final = df_final[['PIEZA', 'SUB PROCESO', 'TOTAL', 'REAL', '% REAL']].copy()
+        df_resumen_final = df_final[['PIEZA', col_sub_actual, 'TOTAL', 'REAL', '% REAL']].copy()
         df_resumen_final.columns = ['PIEZA', 'SUBPROCESO', 'PROGRAMADO', 'AVANCE', '% REAL']
         avance_global = round(df_final['% REAL'].mean(), 1)
 
-# Visualización del Gauge y Gráfica Nueva
-c_g, c_b = st.columns([1, 2])
+# KPIs y Gráficos
+k1, k2, k3 = st.columns(3)
+with k1: st.markdown(f"<div class='metric-card'><small>EFICIENCIA GLOBAL</small><h2>{avance_global}%</h2></div>", unsafe_allow_html=True)
+with k2: st.markdown(f"<div class='metric-card'><small>META TURNO</small><h2>{int(df_resumen_final['PROGRAMADO'].sum()) if not df_resumen_final.empty else 0} PZS</h2></div>", unsafe_allow_html=True)
+with k3: st.markdown(f"<div class='metric-card'><small>REAL TURNO</small><h2>{int(df_resumen_final['AVANCE'].sum()) if not df_resumen_final.empty else 0} PZS</h2></div>", unsafe_allow_html=True)
 
+c_g, c_b = st.columns([1, 2])
 with c_g:
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number", value=avance_global,
-        gauge={'bar':{'color':"#2ecc71"}, 'axis': {'range': [0, 100]}, 'bgcolor': "#f0f2f6"}
-    ))
-    fig.update_layout(height=240, margin=dict(l=20, r=20, t=20, b=20))
+    color_g = obtener_color_nsg(avance_global)
+    fig = go.Figure(go.Indicator(mode="gauge+number", value=avance_global, gauge={
+        'bar':{'color': color_g}, 'axis': {'range': [0, 100]}, 'bgcolor': "#f0f2f6",
+        'steps': [{'range': [0, 80], 'color': "rgba(227, 43, 19, 0.05)"}, {'range': [80, 85], 'color': "rgba(241, 196, 15, 0.1)"}, {'range': [85, 100], 'color': "rgba(46, 204, 113, 0.1)"}]
+    }))
+    fig.update_layout(height=280, margin=dict(l=30, r=30, t=30, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
 with c_b:
     if not df_resumen_final.empty:
-        # --- GRÁFICA COMPARATIVA REAL VS META ---
         fig_bar = go.Figure()
-        
-        # Barra de Meta (Caja de contorno azul)
-        fig_bar.add_trace(go.Bar(
-            name='Meta Programa',
-            x=df_resumen_final['SUBPROCESO'],
-            y=df_resumen_final['PROGRAMADO'],
-            marker=dict(
-                color='rgba(52, 152, 219, 0.1)', # Azul muy bajito
-                line=dict(color='#2980b9', width=2) # Borde azul fuerte
-            )
-        ))
-        
-        # Barra de Avance (Rojo NSG)
-        fig_bar.add_trace(go.Bar(
-            name='Avance Real',
-            x=df_resumen_final['SUBPROCESO'],
-            y=df_resumen_final['AVANCE'],
-            marker_color='#E32B13'
-        ))
-
-        fig_bar.update_layout(
-            barmode='group', 
-            height=280, 
-            margin=dict(l=10, r=10, t=10, b=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)'
-        )
+        fig_bar.add_trace(go.Bar(name='Meta', x=df_resumen_final['SUBPROCESO'], y=df_resumen_final['PROGRAMADO'], marker_color='#610B0B'))
+        fig_bar.add_trace(go.Bar(name='Real', x=df_resumen_final['SUBPROCESO'], y=df_resumen_final['AVANCE'], marker_color='#E32B13'))
+        fig_bar.update_layout(barmode='group', height=280, margin=dict(l=0, r=0, t=20, b=0), legend=dict(orientation="h", y=1.1))
         st.plotly_chart(fig_bar, use_container_width=True)
-    else:
-        st.info("No hay datos para graficar en este momento.")
-# --- 5. REGISTRO ---
-st.divider()
-st.markdown("<div class='step-header'>🚀 CAPTURA DE AUDITORÍA</div>", unsafe_allow_html=True)
-col_a, col_b = st.columns(2)
 
-# Definir variables vacías para que VS Code no marque error
-sub_sel = None
-df_sub_base = pd.DataFrame()
+# ... (Código anterior de KPIs y Gráficos) ...
+
+# --- REGISTRO DE AUDITORÍA ---
+st.markdown("<div class='capture-container'>", unsafe_allow_html=True)
+st.subheader("🚀 REGISTRO DE AUDITORÍA")
+c1, c2, c3 = st.columns([1,1,1])
 f_id = st.session_state.form_id
 
-with col_a:
-    st.markdown("##### **Paso 1: Selección**")
-    piezas_opciones = df_plan_dia['PIEZA'].unique().tolist() if not df_plan_dia.empty else []
-    pieza_sel = st.selectbox("Seleccione Pieza", piezas_opciones)
+with c1:
+    p_sel = st.selectbox("PIEZA 📦", df_plan_dia['PIEZA'].unique() if not df_plan_dia.empty else [], help="Piezas programadas.")
+    df_s = df_bdd_raw[(df_bdd_raw['PIEZA'] == p_sel) & (df_bdd_raw['PROCESO'] == area_sel)].copy()
     
-    # Filtro de BDD para el selector de subprocesos
-    df_sub_base = df_bdd_raw[(df_bdd_raw['PIEZA'] == pieza_sel) & (df_bdd_raw['PROCESO'] == area_sel)].copy()
+    reps = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias['CORTE'] == corte_sel) & (df_auditorias['PIEZA'] == p_sel)]['SUBPROCESO'].tolist() if not df_auditorias.empty else []
+    s_sel = st.selectbox("SUB-PROCESO ⚙️", [s for s in df_s[col_sub_actual].unique() if s not in reps], help="Operación a auditar.")
+
+with c2:
+    ops = st.number_input("OPERADORES 👥", 1, key=f"ops_{f_id}", help="Personal en línea.")
+    real = st.number_input("CANTIDAD REAL 🔢", 0, key=f"r_{f_id}", help="Piezas buenas acumuladas.")
+
+with c3:
+    mins = st.number_input("MIN. PARO ⏳", 0, key=f"m_{f_id}", help="Tiempo muerto.")
+    mot = st.selectbox("MOTIVO PARO ❓", MOTIVOS_PARO, key=f"mot_{f_id}", help="Causa de la demora.")
+
+notas = st.text_input("📝 NOTAS", key=f"n_{f_id}", help="Observaciones adicionales.")
+
+if s_sel:
+    pz_h = float(df_s[df_s[col_sub_actual] == s_sel]['PZ X H'].iloc[0]) if not df_s.empty else 0
+    meta = int((pz_h * max(0, horas_acum - (mins/60))) * ops)
+    st.info(f"💡 **Meta:** {meta} piezas (Basado en {pz_h} pz/h para la pieza {p_sel})")
     
-    if not df_sub_base.empty:
-        # Evitar duplicados en el mismo corte
-        reportados = df_auditorias[(df_auditorias['FECHA'] == fecha_sel) & (df_auditorias['CORTE'] == corte_sel) & (df_auditorias['PIEZA'] == pieza_sel)]['SUBPROCESO'].tolist() if not df_auditorias.empty else []
-        opciones = [s for s in df_sub_base['SUB PROCESO'].tolist() if s not in reportados]
-        sub_sel = st.selectbox("Sub-proceso", opciones) if opciones else None
-        if not opciones: st.success("✅ Proceso completado para este corte.")
-    else:
-        st.warning("⚠️ No se encontraron subprocesos en BDD para esta pieza.")
+    if st.button("💾 GUARDAR REGISTRO"):
+        try:
+            h = datetime.now(pytz.timezone('America/Mexico_City')).strftime('%H:%M:%S')
+            fila = [fecha_sel, area_sel, corte_sel, p_sel, s_sel, int(real), meta, int(real-meta), int(ops), f"[{mot}] {notas}", h]
+            conectar_libro().worksheet("AUDITAR").append_row(fila)
+            st.toast("✅ GUARDADO EXITOSO")
+            st.cache_data.clear()
+            st.session_state.form_id += 1
+            time.sleep(0.5)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error al guardar: {e}")
 
-with col_b:
-    st.markdown("##### **Paso 2: Condiciones**")
-    num_ops = st.number_input("Operadores", min_value=1, value=1, key=f"ops_{f_id}")
-    minutos_p = st.number_input("Min. Paro", min_value=0, key=f"min_{f_id}")
-    motivo_p = st.selectbox("Motivo de Paro", MOTIVOS_PARO, key=f"mot_{f_id}")
-
-if sub_sel:
-    st.markdown("##### **Paso 3: Cantidades**")
-    cc1, cc2, cc3 = st.columns([1.5, 1, 1])
-    with cc1:
-        real_in = st.number_input("CANTIDAD REAL ACUMULADA", min_value=0, key=f"real_{f_id}")
-        notas_aud = st.text_input("Observaciones", key=f"note_{f_id}")
-    with cc2:
-        cap_row = df_sub_base[df_sub_base['SUB PROCESO'] == sub_sel]
-        pz_h_p = float(cap_row['PZ X H'].iloc[0]) if not cap_row.empty else 0
-        tiempo_ef = max(0, horas_acum - (minutos_p/60))
-        meta_e = int((pz_h_p * tiempo_ef) * num_ops)
-        dif = real_in - meta_e
-        st.metric("Meta Teórica", f"{meta_e} pzs")
-        st.metric("Diferencia", f"{dif} pzs", delta=dif)
-    with cc3:
-        st.write("")
-        if st.button("💾 GUARDAR REGISTRO"):
-            try:
-                zona_mx = pytz.timezone('America/Mexico_City')
-                hora_mx = datetime.now(zona_mx).strftime('%H:%M:%S')
-                fila = [fecha_sel, area_sel, corte_sel, pieza_sel, sub_sel, int(real_in), meta_e, dif, int(num_ops), f"[{motivo_p}-{minutos_p}min] {notas_aud}", hora_mx]
-                conectar_libro().worksheet("AUDITAR").append_row(fila)
-                st.toast("✅ ¡Guardado!", icon="🚀")
-                st.cache_data.clear()
-                st.session_state.form_id += 1 
-                time.sleep(0.5)
-                st.rerun()
-            except Exception as e: st.error(f"Error: {e}")
-
-# --- 6. TABLAS FINALES (CON DESGLOSE) ---
+# --- TABLA DE CAPACIDADES DINÁMICA ---
 st.divider()
-c_t1, c_t2 = st.columns([0.7, 1.3])
+titulo_expander = f"📖 CONSULTAR CAPACIDADES (PZ/H) - PIEZA: {p_sel if p_sel else 'NO SELECCIONADA'}"
 
-with c_t1:
-    st.markdown("##### 📖 Capacidades (PZ x Hora)")
-    if not df_sub_base.empty:
-        st.table(df_sub_base[['SUB PROCESO', 'PZ X H']])
-
-with c_t2:
-    st.markdown("##### 📊 Avance Detallado (Pieza + Subproceso)")
-    if not df_resumen_final.empty:
-        # Aplicar formato de semáforo manual para que se vea profesional
-        def color_semaforo(val):
-            color = "#2ecc71" if val >= 95 else "#e67e22" if val >= 80 else "#E32B13"
-            return f"<b style='color: {color};'>{val:,.1f}%</b>"
-        
-        df_visual = df_resumen_final.copy()
-        df_visual['% REAL'] = df_visual['% REAL'].apply(color_semaforo)
-        st.write(df_visual.to_html(escape=False, index=False), unsafe_allow_html=True)
+with st.expander(titulo_expander):
+    if not df_s.empty:
+        st.write(f"Capacidades estándar para la pieza: **{p_sel}**")
+        st.table(df_s[[col_sub_actual, 'PZ X H']])
     else:
-        st.info("Aún no hay registros para mostrar.")
+        st.warning("Selecciona una pieza para ver sus capacidades.")
+
+st.markdown("</div>", unsafe_allow_html=True)
+# ... (Resto del código de la Tabla Final) ...
+
+# Tabla Final de Avances
+st.markdown("### 📊 ESTATUS DETALLADO")
+if not df_resumen_final.empty:
+    df_v = df_resumen_final.copy()
+    df_v['% REAL'] = df_v['% REAL'].apply(lambda x: f"<div style='background:{obtener_color_nsg(x)}; color:white; padding:3px 10px; border-radius:15px; text-align:center; font-weight:bold;'>{x:,.1f}%</div>")
+    st.write(df_v.to_html(escape=False, index=False), unsafe_allow_html=True)
