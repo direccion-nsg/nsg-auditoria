@@ -115,14 +115,20 @@ def obtener_cliente():
 
 def conectar_libro():
     cliente = obtener_cliente()
+    if not cliente:
+        return None
     try:
-        return cliente.open_by_key(ID_LIBRO) if cliente else None
-    except Exception as exc:
-        st.error(f"No se pudo abrir el libro de Google Sheets: {exc}")
+        return cliente.open_by_key(ID_LIBRO)
+    except Exception as e:
+        if "429" in str(e):
+            st.error(
+                "⏳ Google está saturado. Espera 30 segundos y la App funcionará sola."
+            )
+            time.sleep(2)  # Pausa técnica
         return None
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def leer_datos_seguro(nombre_hoja, fila_encabezado=0):
     try:
         libro = conectar_libro()
@@ -201,7 +207,9 @@ def sugerir_corte_actual():
 
 
 def obtener_plan_del_dia(df_programa, columnas_programa, fecha_sel, area_sel):
-    requeridas = validar_columnas(columnas_programa, ["fecha", "area", "pieza", "total"])
+    requeridas = validar_columnas(
+        columnas_programa, ["fecha", "area", "pieza", "total"]
+    )
     if df_programa.empty or requeridas:
         return pd.DataFrame()
 
@@ -225,7 +233,9 @@ def obtener_plan_del_dia(df_programa, columnas_programa, fecha_sel, area_sel):
     return df_plan
 
 
-def calcular_resumen(df_plan_dia, col_prog, df_bdd, col_bdd, df_auditorias, fecha_sel, area_sel):
+def calcular_resumen(
+    df_plan_dia, col_prog, df_bdd, col_bdd, df_auditorias, fecha_sel, area_sel
+):
     avance_global = 0.0
     df_resumen = pd.DataFrame()
 
@@ -268,7 +278,9 @@ def calcular_resumen(df_plan_dia, col_prog, df_bdd, col_bdd, df_auditorias, fech
             ),
             "real": encontrar_columna(df_auditorias, ["REAL"]),
         }
-        if not validar_columnas(col_aud, ["fecha", "area", "pieza", "subproceso", "real"]):
+        if not validar_columnas(
+            col_aud, ["fecha", "area", "pieza", "subproceso", "real"]
+        ):
             df_aud_hoy = df_auditorias[
                 (df_auditorias[col_aud["fecha"]] == fecha_sel)
                 & (df_auditorias[col_aud["area"]] == area_sel)
@@ -277,7 +289,9 @@ def calcular_resumen(df_plan_dia, col_prog, df_bdd, col_bdd, df_auditorias, fech
                 df_aud_hoy[col_aud["real"]], errors="coerce"
             ).fillna(0)
             df_max_real = (
-                df_aud_hoy.groupby([col_aud["pieza"], col_aud["subproceso"]])[col_aud["real"]]
+                df_aud_hoy.groupby([col_aud["pieza"], col_aud["subproceso"]])[
+                    col_aud["real"]
+                ]
                 .max()
                 .reset_index()
             )
@@ -304,7 +318,13 @@ def calcular_resumen(df_plan_dia, col_prog, df_bdd, col_bdd, df_auditorias, fech
     )
 
     df_resumen = df_final[
-        [col_bdd["pieza"], col_bdd["subproceso"], col_prog["total"], col_aud["real"], "% REAL"]
+        [
+            col_bdd["pieza"],
+            col_bdd["subproceso"],
+            col_prog["total"],
+            col_aud["real"],
+            "% REAL",
+        ]
     ].copy()
     df_resumen.columns = ["PIEZA", "SUBPROCESO", "PROGRAMADO", "AVANCE", "% REAL"]
     avance_global = round(df_final["% REAL"].mean(), 1)
@@ -338,7 +358,9 @@ def obtener_auditorias_hoy(df_auditorias, fecha_sel, area_sel):
     return df_hoy, columnas
 
 
-def obtener_piezas_pendientes(df_plan_dia, col_prog, df_bdd, col_bdd, df_aud_hoy, col_aud, area_sel, corte_sel):
+def obtener_piezas_pendientes(
+    df_plan_dia, col_prog, df_bdd, col_bdd, df_aud_hoy, col_aud, area_sel, corte_sel
+):
     if df_plan_dia.empty or df_bdd.empty:
         return []
 
@@ -351,7 +373,9 @@ def obtener_piezas_pendientes(df_plan_dia, col_prog, df_bdd, col_bdd, df_aud_hoy
     piezas_pendientes = []
 
     for pieza in piezas_validas:
-        mask = (df_bdd[col_bdd["pieza"]] == pieza) & (df_bdd[col_bdd["proceso"]] == area_sel)
+        mask = (df_bdd[col_bdd["pieza"]] == pieza) & (
+            df_bdd[col_bdd["proceso"]] == area_sel
+        )
         subs_totales = df_bdd[mask][col_bdd["subproceso"]].unique()
 
         reps_pieza = []
@@ -367,7 +391,18 @@ def obtener_piezas_pendientes(df_plan_dia, col_prog, df_bdd, col_bdd, df_aud_hoy
     return piezas_pendientes
 
 
-def guardar_registro(fecha_sel, area_sel, corte_sel, pieza_sel, subproceso_sel, real, meta, ops, mot, notas):
+def guardar_registro(
+    fecha_sel,
+    area_sel,
+    corte_sel,
+    pieza_sel,
+    subproceso_sel,
+    real,
+    meta,
+    ops,
+    mot,
+    notas,
+):
     libro = conectar_libro()
     if not libro:
         st.error("No hay conexión disponible con el libro para guardar.")
@@ -403,13 +438,19 @@ def render_kpis(avance_global, df_resumen_final):
             unsafe_allow_html=True,
         )
     with k2:
-        meta_turno = int(df_resumen_final["PROGRAMADO"].sum()) if not df_resumen_final.empty else 0
+        meta_turno = (
+            int(df_resumen_final["PROGRAMADO"].sum())
+            if not df_resumen_final.empty
+            else 0
+        )
         st.markdown(
             f"<div class='metric-card'><small>META TURNO</small><h2>{meta_turno} PZS</h2></div>",
             unsafe_allow_html=True,
         )
     with k3:
-        real_turno = int(df_resumen_final["AVANCE"].sum()) if not df_resumen_final.empty else 0
+        real_turno = (
+            int(df_resumen_final["AVANCE"].sum()) if not df_resumen_final.empty else 0
+        )
         st.markdown(
             f"<div class='metric-card'><small>REAL TURNO</small><h2>{real_turno} PZS</h2></div>",
             unsafe_allow_html=True,
@@ -540,7 +581,9 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
         return
 
     df_a_v = df_auditorias.copy()
-    df_a_v[col_aud["real"]] = pd.to_numeric(df_a_v[col_aud["real"]], errors="coerce").fillna(0)
+    df_a_v[col_aud["real"]] = pd.to_numeric(
+        df_a_v[col_aud["real"]], errors="coerce"
+    ).fillna(0)
 
     df_p_v = df_programa.copy()
     df_p_v["FECHA_DT"] = pd.to_datetime(
@@ -554,12 +597,16 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
     mask_m = df_p_v[col_prog["area"]].str.upper() == "MOLDEO"
     df_p_m = df_p_v[
         mask_m
-        & df_p_v[col_prog["pieza"]].str.contains("GENERAL|VACIADO|ADOBES", case=False, na=False)
+        & df_p_v[col_prog["pieza"]].str.contains(
+            "GENERAL|VACIADO|ADOBES", case=False, na=False
+        )
     ]
     df_p_o = df_p_v[~mask_m]
     df_p_final = pd.concat([df_p_m, df_p_o])
     total_original = len(df_p_final)
-    df_p_final[col_prog["total"]] = convertir_serie_numerica(df_p_final[col_prog["total"]])
+    df_p_final[col_prog["total"]] = convertir_serie_numerica(
+        df_p_final[col_prog["total"]]
+    )
     df_p_final = df_p_final[df_p_final[col_prog["total"]] > 0].copy()
     filas_excluidas = total_original - len(df_p_final)
     if filas_excluidas > 0:
@@ -568,13 +615,17 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
         )
 
     df_max_a = (
-        df_a_v.groupby([col_aud["fecha"], col_aud["pieza"], col_aud["subproceso"]])[col_aud["real"]]
+        df_a_v.groupby([col_aud["fecha"], col_aud["pieza"], col_aud["subproceso"]])[
+            col_aud["real"]
+        ]
         .max()
         .reset_index()
     )
 
     df_base_v = pd.merge(
-        df_p_final[[col_prog["fecha"], col_prog["area"], col_prog["pieza"], col_prog["total"]]],
+        df_p_final[
+            [col_prog["fecha"], col_prog["area"], col_prog["pieza"], col_prog["total"]]
+        ],
         df_bdd[[col_bdd["pieza"], col_bdd["subproceso"], col_bdd["proceso"]]],
         left_on=col_prog["pieza"],
         right_on=col_bdd["pieza"],
@@ -669,7 +720,10 @@ def main():
         if os.path.exists(LOGO_FILENAME):
             st.image(LOGO_FILENAME, use_container_width=True)
 
-        st.markdown("<h3 style='text-align: center;'>CONTROL DE ACCESO</h3>", unsafe_allow_html=True)
+        st.markdown(
+            "<h3 style='text-align: center;'>CONTROL DE ACCESO</h3>",
+            unsafe_allow_html=True,
+        )
 
         fecha_dt = st.date_input("FECHA", ahora_local().date())
         fecha_sel = fecha_dt.strftime("%d/%m/%Y")
@@ -720,7 +774,11 @@ def main():
     st.subheader("REGISTRO DE AUDITORÍA")
 
     df_aud_hoy, col_aud = obtener_auditorias_hoy(df_auditorias, fecha_sel, area_sel)
-    piezas_validas = df_plan_dia[col_prog["pieza"]].unique() if not df_plan_dia.empty and col_prog.get("pieza") else []
+    piezas_validas = (
+        df_plan_dia[col_prog["pieza"]].unique()
+        if not df_plan_dia.empty and col_prog.get("pieza")
+        else []
+    )
     piezas_pendientes = obtener_piezas_pendientes(
         df_plan_dia, col_prog, df_bdd, col_bdd, df_aud_hoy, col_aud, area_sel, corte_sel
     )
@@ -747,7 +805,12 @@ def main():
                 st.error("No se encontraron columnas clave en la hoja BDD.")
 
             reps = []
-            if p_sel and not df_aud_hoy.empty and col_aud.get("corte") and col_aud.get("pieza"):
+            if (
+                p_sel
+                and not df_aud_hoy.empty
+                and col_aud.get("corte")
+                and col_aud.get("pieza")
+            ):
                 reps = df_aud_hoy[
                     (df_aud_hoy[col_aud["corte"]] == corte_sel)
                     & (df_aud_hoy[col_aud["pieza"]] == p_sel)
@@ -779,15 +842,21 @@ def main():
         try:
             if not df_s.empty and s_sel in df_s[col_bdd["subproceso"]].values:
                 if not col_bdd.get("pzxh"):
-                    st.warning("No se encontró la columna de capacidad PZ X H en la BDD.")
+                    st.warning(
+                        "No se encontró la columna de capacidad PZ X H en la BDD."
+                    )
                 else:
-                    pz_h_val = df_s[df_s[col_bdd["subproceso"]] == s_sel][col_bdd["pzxh"]].iloc[0]
+                    pz_h_val = df_s[df_s[col_bdd["subproceso"]] == s_sel][
+                        col_bdd["pzxh"]
+                    ].iloc[0]
                     pz_h = float(pz_h_val) if pz_h_val else 0
                     meta = int((pz_h * max(0, horas_acum - (mins / 60))) * ops)
                     st.info(f"Meta: {meta} piezas")
 
                     if mot == "OTRO (ESPECIFICAR EN NOTAS)" and not notas.strip():
-                        st.warning("Captura una nota cuando el motivo de paro sea OTRO.")
+                        st.warning(
+                            "Captura una nota cuando el motivo de paro sea OTRO."
+                        )
                     elif st.button("GUARDAR REGISTRO"):
                         exito = guardar_registro(
                             fecha_sel,
@@ -819,7 +888,11 @@ def main():
     st.markdown("</div>", unsafe_allow_html=True)
 
     render_estatus_detallado(df_resumen_final)
-    render_capacidades(df_s if 'df_s' in locals() else pd.DataFrame(), col_bdd, p_sel if 'p_sel' in locals() else None)
+    render_capacidades(
+        df_s if "df_s" in locals() else pd.DataFrame(),
+        col_bdd,
+        p_sel if "p_sel" in locals() else None,
+    )
     render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_bdd)
 
 
