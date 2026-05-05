@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytz
 import streamlit as st
+from gspread.exceptions import APIError
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 1. CONFIGURACIÓN TÉCNICA ---
@@ -48,6 +49,15 @@ def normalizar_clave(texto):
     return re.sub(r"[^A-Z0-9]", "", texto)
 
 
+def obtener_version_hoja(nombre_hoja):
+    return st.session_state.get(f"version_hoja_{nombre_hoja}", 0)
+
+
+def invalidar_cache_hoja(nombre_hoja):
+    clave = f"version_hoja_{nombre_hoja}"
+    st.session_state[clave] = st.session_state.get(clave, 0) + 1
+
+
 def encontrar_columna(df, aliases, contiene_todos=None):
     if df.empty:
         return None
@@ -68,7 +78,9 @@ def encontrar_columna(df, aliases, contiene_todos=None):
 
 
 def preparar_dataframe(nombre_hoja, fila_encabezado=0):
-    df = leer_datos_seguro(nombre_hoja, fila_encabezado)
+    df = leer_datos_seguro(
+        nombre_hoja, fila_encabezado, obtener_version_hoja(nombre_hoja)
+    )
     columnas = {
         "pieza": encontrar_columna(df, ["PIEZA"]),
         "area": encontrar_columna(df, ["AREA", "PROCESO", "ÁREA"]),
@@ -118,25 +130,26 @@ def conectar_libro():
     if not cliente:
         return None
     try:
+        # Intentar abrir el libro
         return cliente.open_by_key(ID_LIBRO)
     except Exception as e:
         if "429" in str(e):
-            st.error(
-                "⏳ Google está saturado. Espera 30 segundos y la App funcionará sola."
+            # En lugar de solo time.sleep, notificamos al usuario sin bloquear todo el hilo
+            st.warning(
+                "⚠️ Google Sheets alcanzó su límite de lectura. La App usará datos en caché."
             )
-            time.sleep(2)  # Pausa técnica
         return None
 
 
-@st.cache_data(ttl=300)
-def leer_datos_seguro(nombre_hoja, fila_encabezado=0):
+@st.cache_data(ttl=600)
+def leer_datos_seguro(nombre_hoja, fila_encabezado=0, version=0):
     try:
         libro = conectar_libro()
         if not libro:
             return pd.DataFrame()
 
         hoja = libro.worksheet(nombre_hoja)
-        datos = hoja.get_all_values()
+        datos = leer_hoja_con_reintentos(hoja)
         if len(datos) <= fila_encabezado:
             return pd.DataFrame()
 
@@ -152,6 +165,34 @@ def leer_datos_seguro(nombre_hoja, fila_encabezado=0):
     except Exception as exc:
         st.error(f"No se pudo leer la hoja '{nombre_hoja}': {exc}")
         return pd.DataFrame()
+
+
+def es_error_cuota(exc):
+    mensaje = str(exc)
+    return "429" in mensaje or "Read requests per minute per user" in mensaje
+
+
+def leer_hoja_con_reintentos(hoja, max_intentos=4, pausa_inicial=1.5):
+    ultimo_error = None
+
+    for intento in range(max_intentos):
+        try:
+            return hoja.get_all_values()
+        except APIError as exc:
+            ultimo_error = exc
+            if not es_error_cuota(exc) or intento == max_intentos - 1:
+                raise
+            time.sleep(pausa_inicial * (2**intento))
+        except Exception as exc:
+            ultimo_error = exc
+            if not es_error_cuota(exc) or intento == max_intentos - 1:
+                raise
+            time.sleep(pausa_inicial * (2**intento))
+
+    if ultimo_error:
+        raise ultimo_error
+
+    return []
 
 
 def obtener_color_nsg(valor):
@@ -872,7 +913,7 @@ def main():
                         )
                         if exito:
                             st.toast("Guardado exitoso")
-                            st.cache_data.clear()
+                            invalidar_cache_hoja("AUDITAR")
                             st.session_state.form_id += 1
                             time.sleep(0.5)
                             st.rerun()
