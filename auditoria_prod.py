@@ -2,7 +2,7 @@ import os
 import re
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import gspread
 import pandas as pd
@@ -591,19 +591,10 @@ def render_capacidades(df_s, col_bdd, pieza_sel):
             st.warning("Selecciona una pieza válida para ver sus capacidades.")
 
 
-def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_bdd):
-    st.divider()
-    st.markdown("### DESEMPEÑO POR RANGO DE FECHAS")
-
-    c_r1, c_r2 = st.columns(2)
-    with c_r1:
-        f_ini_stat = st.date_input("Desde:", ahora_local().date(), key="vfinal_ini")
-    with c_r2:
-        f_fin_stat = st.date_input("Hasta:", ahora_local().date(), key="vfinal_fin")
-
-    if df_auditorias.empty or df_programa.empty or df_bdd.empty:
-        return
-
+def obtener_datos_unificados(
+    df_auditorias, df_programa, df_bdd, col_prog, col_bdd, f_ini, f_fin
+):
+    # Detectamos columnas de auditoría
     col_aud = {
         "fecha": encontrar_columna(df_auditorias, ["FECHA"]),
         "pieza": encontrar_columna(df_auditorias, ["PIEZA"]),
@@ -614,27 +605,29 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
         ),
         "real": encontrar_columna(df_auditorias, ["REAL"]),
     }
-    faltantes_aud = validar_columnas(col_aud, ["fecha", "pieza", "subproceso", "real"])
-    faltantes_prog = validar_columnas(col_prog, ["fecha", "area", "pieza", "total"])
-    faltantes_bdd = validar_columnas(col_bdd, ["pieza", "subproceso", "proceso"])
-    if faltantes_aud or faltantes_prog or faltantes_bdd:
-        st.warning("Faltan columnas requeridas para construir la estadística final.")
-        return
 
+    if df_auditorias.empty or df_programa.empty or df_bdd.empty:
+        return pd.DataFrame(), col_aud
+
+    # Limpiamos Auditorías
     df_a_v = df_auditorias.copy()
     df_a_v[col_aud["real"]] = pd.to_numeric(
         df_a_v[col_aud["real"]], errors="coerce"
     ).fillna(0)
 
+    # Filtramos Programa por Fechas
     df_p_v = df_programa.copy()
     df_p_v["FECHA_DT"] = pd.to_datetime(
         df_p_v[col_prog["fecha"]], format="%d/%m/%Y", errors="coerce"
     )
     df_p_v = df_p_v[
-        (df_p_v["FECHA_DT"].dt.date >= f_ini_stat)
-        & (df_p_v["FECHA_DT"].dt.date <= f_fin_stat)
+        (df_p_v["FECHA_DT"].dt.date >= f_ini) & (df_p_v["FECHA_DT"].dt.date <= f_fin)
     ]
 
+    if df_p_v.empty:
+        return pd.DataFrame(), col_aud
+
+    # Filtro específico de Moldeo que tenías en tu código original
     mask_m = df_p_v[col_prog["area"]].str.upper() == "MOLDEO"
     df_p_m = df_p_v[
         mask_m
@@ -644,17 +637,13 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
     ]
     df_p_o = df_p_v[~mask_m]
     df_p_final = pd.concat([df_p_m, df_p_o])
-    total_original = len(df_p_final)
+
     df_p_final[col_prog["total"]] = convertir_serie_numerica(
         df_p_final[col_prog["total"]]
     )
     df_p_final = df_p_final[df_p_final[col_prog["total"]] > 0].copy()
-    filas_excluidas = total_original - len(df_p_final)
-    if filas_excluidas > 0:
-        st.caption(
-            f"Se excluyeron {filas_excluidas} registros del programa con TOTAL vacío, inválido o igual a 0."
-        )
 
+    # Sacamos lo máximo reportado en auditoría por cada subproceso
     df_max_a = (
         df_a_v.groupby([col_aud["fecha"], col_aud["pieza"], col_aud["subproceso"]])[
             col_aud["real"]
@@ -663,9 +652,16 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
         .reset_index()
     )
 
+    # Cruzamos Programa con BDD para saber qué subprocesos debe llevar cada pieza
     df_base_v = pd.merge(
         df_p_final[
-            [col_prog["fecha"], col_prog["area"], col_prog["pieza"], col_prog["total"]]
+            [
+                col_prog["fecha"],
+                col_prog["area"],
+                col_prog["pieza"],
+                col_prog["total"],
+                "FECHA_DT",
+            ]
         ],
         df_bdd[[col_bdd["pieza"], col_bdd["subproceso"], col_bdd["proceso"]]],
         left_on=col_prog["pieza"],
@@ -674,7 +670,8 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
     )
     df_base_v = df_base_v[df_base_v[col_prog["area"]] == df_base_v[col_bdd["proceso"]]]
 
-    df_unificado_v = pd.merge(
+    # Unificamos todo
+    df_uni = pd.merge(
         df_base_v,
         df_max_a,
         left_on=[col_prog["fecha"], col_prog["pieza"], col_bdd["subproceso"]],
@@ -682,22 +679,543 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
         how="left",
     ).fillna(0)
 
-    df_unificado_v[col_prog["total"]] = convertir_serie_numerica(
-        df_unificado_v[col_prog["total"]]
-    ).fillna(0)
-    total_seguro = convertir_serie_numerica(df_unificado_v[col_prog["total"]]).fillna(0)
-    real_seguro = convertir_serie_numerica(df_unificado_v[col_aud["real"]]).fillna(0)
-    df_unificado_v["% REAL"] = 0.0
-    mask_total_valido = total_seguro > 0
-    df_unificado_v.loc[mask_total_valido, "% REAL"] = (
-        real_seguro[mask_total_valido] / total_seguro[mask_total_valido] * 100
+    # Cálculo final del % REAL basado en lo Programado
+    total_seguro = convertir_serie_numerica(df_uni[col_prog["total"]]).fillna(0)
+    real_seguro = convertir_serie_numerica(df_uni[col_aud["real"]]).fillna(0)
+    df_uni["% REAL"] = 0.0
+    mask_total = total_seguro > 0
+    df_uni.loc[mask_total, "% REAL"] = (
+        real_seguro[mask_total] / total_seguro[mask_total] * 100
     )
 
-    if df_unificado_v.empty:
-        st.info("No hay datos en el rango seleccionado.")
+    return df_uni, col_aud
+
+
+def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col_bdd):
+    st.markdown("## 🏭 Resultados del Programa de Producción NSG")
+
+    # --- 1. FILTROS DE FECHA (Blindados) ---
+    c1, c2 = st.columns(2)
+    with c1:
+        f_ini = st.date_input(
+            "Analizar desde:", ahora_local().date() - timedelta(days=7), key="dash_f1"
+        )
+    with c2:
+        f_fin = st.date_input("Hasta:", ahora_local().date(), key="dash_f2")
+
+    # --- VALIDACIÓN DE HOJAS ---
+    hojas_vacias = []
+    if df_auditorias.empty:
+        hojas_vacias.append("AUDITAR")
+    if df_programa.empty:
+        hojas_vacias.append("PROGRAMA")
+    if df_bdd.empty:
+        hojas_vacias.append("BDD")
+
+    if hojas_vacias:
+        st.warning(
+            f"⚠️ Esperando datos... No se detectaron registros en: {', '.join(hojas_vacias)}"
+        )
         return
 
-    res_final = df_unificado_v.groupby(col_prog["area"])["% REAL"].mean().reset_index()
+    # --- 2. MOTOR UNIFICADO ---
+    df_uni, col_aud = obtener_datos_unificados(
+        df_auditorias, df_programa, df_bdd, col_prog, col_bdd, f_ini, f_fin
+    )
+
+    if df_uni.empty:
+        st.info("No hay registros que coincidan con el rango de fechas.")
+        return
+
+    # --- PREPARACIÓN DE MÉTRICAS TEMPORALES ---
+    df_dias = df_uni.groupby("FECHA_DT")["% REAL"].mean().reset_index()
+    total_dias = len(df_dias)
+    dias_ganados = len(df_dias[df_dias["% REAL"] >= 80])
+    dias_riesgo = len(df_dias[(df_dias["% REAL"] >= 70) & (df_dias["% REAL"] < 80)])
+    dias_perdidos = len(df_dias[df_dias["% REAL"] < 70])
+
+    # --- 3. KPIs GLOBALES Y SEMÁFORO (Diseño Operativo) ---
+    cumplimiento_total = df_uni["% REAL"].mean()
+
+    st.markdown(
+        f"""
+<div style='display: flex; justify-content: space-between; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;'>
+    <div style='background: white; border-top: 5px solid #3498db; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
+        <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🎯 CUMPLIMIENTO DEL PROGRAMA</div>
+        <div style='font-size: 28px; color: #2980b9; font-weight: 900; margin-top: 5px;'>{cumplimiento_total:.1f}%</div>
+    </div>
+    <div style='background: white; border-top: 5px solid #95a5a6; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
+        <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🗓️ DÍAS TRABAJADOS (PERIODO)</div>
+        <div style='font-size: 28px; color: #7f8c8d; font-weight: 900; margin-top: 5px;'>{total_dias}</div>
+    </div>
+    <div style='background: white; border-top: 5px solid #2ecc71; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
+        <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🟢 META LOGRADA (80% o más)</div>
+        <div style='font-size: 28px; color: #27ae60; font-weight: 900; margin-top: 5px;'>{dias_ganados}</div>
+    </div>
+    <div style='background: white; border-top: 5px solid #f1c40f; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
+        <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🟡 CASI LLEGAMOS (70% - 79%)</div>
+        <div style='font-size: 28px; color: #f39c12; font-weight: 900; margin-top: 5px;'>{dias_riesgo}</div>
+    </div>
+    <div style='background: white; border-top: 5px solid #e74c3c; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
+        <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🔴 DÍAS CRÍTICOS (Menos de 70%)</div>
+        <div style='font-size: 28px; color: #c0392b; font-weight: 900; margin-top: 5px;'>{dias_perdidos}</div>
+    </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # --- 4. RESUMEN EJECUTIVO (Con Diagnóstico y Producto Terminado) ---
+
+    # A. Cálculos de Líderes y Cuellos de Botella
+    area_estrella = df_uni.groupby(col_prog["area"])["% REAL"].mean().idxmax()
+    area_estrella_val = df_uni.groupby(col_prog["area"])["% REAL"].mean().max()
+    sub_critico = df_uni.groupby(col_bdd["subproceso"])["% REAL"].mean().idxmin()
+
+    # B. Cálculo de Pieza Estrella (Solo Producto Terminado: Excluyendo Corazones, Moldeo y General)
+    mask_pt = ~(
+        df_uni[col_prog["area"]].str.upper().isin(["CORAZONES", "MOLDEO"])
+        | df_uni[col_prog["pieza"]].str.contains("GENERAL", case=False, na=False)
+    )
+    df_pt_only = df_uni[mask_pt]
+
+    if not df_pt_only.empty:
+        pieza_estrella = df_pt_only.groupby(col_prog["pieza"])["% REAL"].mean().idxmax()
+        p_est_val = df_pt_only.groupby(col_prog["pieza"])["% REAL"].mean().max()
+        texto_pieza = f"La pieza líder en <b>Producto Terminado</b> es <b>{pieza_estrella}</b> ({p_est_val:.1f}%)."
+    else:
+        texto_pieza = "No hay datos suficientes de piezas terminadas (Ensamble/Corte) en este rango."
+
+    # C. Cálculo de Causa Raíz (Motivo de Paro Principal)
+    df_a_raw = df_auditorias.copy()
+    c_f_raw = encontrar_columna(df_a_raw, ["FECHA"])
+    c_n_raw = encontrar_columna(df_a_raw, ["NOTAS", "NOTA"])
+
+    df_a_raw["FECHA_DT"] = pd.to_datetime(
+        df_a_raw[c_f_raw], format="%d/%m/%Y", errors="coerce"
+    )
+    df_a_raw = df_a_raw[
+        (df_a_raw["FECHA_DT"].dt.date >= f_ini)
+        & (df_a_raw["FECHA_DT"].dt.date <= f_fin)
+    ]
+    df_a_raw["MOTIVO"] = (
+        df_a_raw[c_n_raw].astype(str).str.extract(r"^\[(.*?)\]")[0] if c_n_raw else None
+    )
+
+    paro_principal = "No hay paros registrados."
+    df_paros = df_a_raw[df_a_raw["MOTIVO"].notna() & (df_a_raw["MOTIVO"] != "SIN PARO")]
+    if not df_paros.empty:
+        paro_top = df_paros["MOTIVO"].value_counts().idxmax()
+        paro_principal = f"El motivo de paro más frecuente fue <b>{paro_top}</b>."
+
+    # D. Evaluación de la salud de la planta para el título dinámico
+    if cumplimiento_total >= 80:
+        estado_planta = (
+            "<span style='color: #27ae60;'>🟢 OPERACIÓN RENTABLE (&ge; 80%)</span>"
+        )
+        borde_color = "#27ae60"
+    elif cumplimiento_total >= 70:
+        estado_planta = (
+            "<span style='color: #f39c12;'>🟡 ZONA DE RIESGO (70% - 79%)</span>"
+        )
+        borde_color = "#f39c12"
+    else:
+        estado_planta = (
+            "<span style='color: #c0392b;'>🔴 ESTADO CRÍTICO (&lt; 70%)</span>"
+        )
+        borde_color = "#c0392b"
+
+    # E. Renderizado del Cuadro Ejecutivo
+    st.markdown(
+        f"""
+    <div style='background-color: #f8f9fa; border-left: 6px solid {borde_color}; padding: 15px; border-radius: 5px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
+        <h4 style='margin-top: 0; color: #2c3e50;'>🤖 Diagnóstico del Sistema: {estado_planta}</h4>
+        <ul style='margin-bottom: 0; font-size: 15px; color: #34495e;'>
+            <li><b>Líder de Área:</b> <b>{area_estrella}</b> lidera con un <b>{area_estrella_val:.1f}%</b> de cumplimiento.</li>
+            <li><b>Análisis de Salida:</b> {texto_pieza}</li>
+            <li><b>Alerta de Proceso:</b> El subproceso <b>{sub_critico}</b> es el mayor cuello de botella actual.</li>
+            <li><b>Causa Raíz Operativa:</b> {paro_principal}</li>
+        </ul>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    # --- 5. GRÁFICAS PRINCIPALES (Con Semáforo y Escala al 100%) ---
+    col_izq, col_der = st.columns(2)
+
+    with col_izq:
+        st.subheader("📈 Tendencia Diaria del periodo")
+        df_dias["%_VISUAL"] = df_dias["% REAL"].clip(upper=100)
+
+        fig_t = go.Figure()
+
+        # 1. Fondos de colores (El techo sube a 115 para dar aire)
+        fig_t.add_hrect(
+            y0=0,
+            y1=70,
+            fillcolor="#e74c3c",
+            opacity=0.1,
+            line_width=0,
+            annotation_text="ZONA CRÍTICA",
+            annotation_position="bottom right",
+            annotation_font_color="#c0392b",
+        )
+        fig_t.add_hrect(y0=70, y1=80, fillcolor="#f1c40f", opacity=0.15, line_width=0)
+        fig_t.add_hrect(
+            y0=80,
+            y1=115,
+            fillcolor="#2ecc71",
+            opacity=0.1,
+            line_width=0,
+            annotation_text="ZONA SEGURA",
+            annotation_position="top right",
+            annotation_font_color="#27ae60",
+        )
+
+        # 2. Truco experto: Alternar posición del texto para evitar choques
+        posiciones_texto = [
+            "bottom center" if val >= 92 else "top center"
+            for val in df_dias["%_VISUAL"]
+        ]
+
+        # 3. Línea de tendencia y puntos
+        fig_t.add_trace(
+            go.Scatter(
+                x=df_dias["FECHA_DT"],
+                y=df_dias["%_VISUAL"],
+                mode="lines+markers+text",
+                text=[f"{x:.0f}%" for x in df_dias["% REAL"]],
+                textposition=posiciones_texto,  # Aplicamos el esquive
+                textfont=dict(size=13, color="black", family="Arial Black"),
+                line=dict(color="#2c3e50", width=3),
+                marker=dict(
+                    size=12,
+                    color=[
+                        "#2ecc71" if x >= 80 else "#f1c40f" if x >= 70 else "#e74c3c"
+                        for x in df_dias["% REAL"]
+                    ],
+                    line=dict(width=2, color="white"),
+                ),
+            )
+        )
+
+        # 4. Línea de Objetivo movida a la izquierda (top left)
+        fig_t.add_hline(
+            y=80,
+            line_dash="dash",
+            line_color="#27ae60",
+            line_width=3,
+            annotation_text="🎯 META (80%)",
+            annotation_position="top left",  # Ya no estorbará en medio
+            annotation_font=dict(size=13, color="#27ae60", weight="bold"),
+        )
+
+        fig_t.update_layout(
+            height=380,  # Le damos más altura a la gráfica para despejar los picos
+            yaxis=dict(range=[0, 115], title="Cumplimiento (%)", showgrid=False),
+            xaxis=dict(showgrid=False),
+            margin=dict(t=30, b=10, l=10, r=10),
+        )
+        st.plotly_chart(fig_t, use_container_width=True)
+
+    with col_der:
+        st.subheader("🏢 Cumplimiento del periodo por Área")
+        df_area = df_uni.groupby(col_prog["area"])["% REAL"].mean().reset_index()
+        df_area["%_VISUAL"] = df_area["% REAL"].clip(upper=100)
+
+        fig_a = go.Figure()
+
+        # Zonas de Semáforo también para las barras
+        fig_a.add_hrect(y0=0, y1=70, fillcolor="#e74c3c", opacity=0.1, line_width=0)
+        fig_a.add_hrect(y0=70, y1=80, fillcolor="#f1c40f", opacity=0.15, line_width=0)
+        fig_a.add_hrect(y0=80, y1=100, fillcolor="#2ecc71", opacity=0.1, line_width=0)
+
+        fig_a.add_trace(
+            go.Bar(
+                x=df_area[col_prog["area"]],
+                y=df_area["%_VISUAL"],
+                marker_color=[
+                    "#2ecc71" if x >= 80 else "#f1c40f" if x >= 70 else "#e74c3c"
+                    for x in df_area["% REAL"]
+                ],
+                text=[f"{x:.1f}%" for x in df_area["% REAL"]],
+                textposition="auto",
+                textfont=dict(size=14, color="white", weight="bold"),
+            )
+        )
+
+        fig_a.add_hline(
+            y=80,
+            line_dash="dash",
+            line_color="#27ae60",
+            line_width=3,
+            annotation_text="🎯 OBJETIVO MÍNIMO (80%)",
+            annotation_font=dict(size=13, color="#27ae60", weight="bold"),
+        )
+
+        fig_a.update_layout(
+            yaxis=dict(range=[0, 105], title="Cumplimiento (%)", showgrid=False),
+            margin=dict(t=30, b=10, l=10, r=10),
+        )
+        st.plotly_chart(fig_a, use_container_width=True)
+
+    st.divider()
+
+    # --- 6. RANKINGS (VISUALES PARA OPERADORES) ---
+    st.markdown("### 🥇 Ranking de Avance del Programa de Producción")
+
+    # 1. Preparar datos (Intacto)
+    df_p_rank = df_pt_only.groupby(col_prog["pieza"])["% REAL"].mean().reset_index()
+    df_s_rank = df_uni.groupby(col_bdd["subproceso"])["% REAL"].mean().reset_index()
+
+    # 2. El "Truco Visual": Convertir números en barras de "Batería"
+    cfg_progreso = st.column_config.ProgressColumn(
+        "NIVEL DE AVANCE",
+        help="Barra de cumplimiento",
+        format="%.1f%%",
+        min_value=0,
+        max_value=100,
+    )
+
+    c_best, c_worst = st.columns(2)
+
+    with c_best:
+        st.success("🏆 EQUIPOS ESTRELLA (Aplaude a estos procesos)")
+
+        st.write("📦 **TOP 5: Piezas con mayor avance:**")
+        top_p = df_p_rank.nlargest(5, "% REAL")
+        st.dataframe(
+            top_p,
+            column_config={col_prog["pieza"]: "PIEZA", "% REAL": cfg_progreso},
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.write("⭐ **TOP 5: Operaciones con mejor avance:**")
+        top_s = df_s_rank.nlargest(5, "% REAL")
+        st.dataframe(
+            top_s,
+            column_config={col_bdd["subproceso"]: "OPERACIÓN", "% REAL": cfg_progreso},
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    with c_worst:
+        st.error("🚨 FOCOS ROJOS (Aquí hay que meter las manos)")
+
+        st.write("⚠️ **ALERTA: Piezas con mayor atraso:**")
+        bot_p = df_p_rank.nsmallest(5, "% REAL")
+        st.dataframe(
+            bot_p,
+            column_config={col_prog["pieza"]: "PIEZA", "% REAL": cfg_progreso},
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.write("🛑 **ALERTA: Operaciones con mayor rezago:**")
+        bot_s = df_s_rank.nsmallest(5, "% REAL")
+        st.dataframe(
+            bot_s,
+            column_config={col_bdd["subproceso"]: "OPERACIÓN", "% REAL": cfg_progreso},
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.divider()
+
+    # --- 7. COMPORTAMIENTO Y PAROS ---
+    c_san, c_paro = st.columns(2)
+
+    with c_san:
+        st.subheader("📅 Cumplimiento por Día de la Semana")
+        st.caption("Comparativo del periodo contra la meta del 80%")
+        map_dias = {
+            0: "Lunes",
+            1: "Martes",
+            2: "Miércoles",
+            3: "Jueves",
+            4: "Viernes",
+            5: "Sábado",
+            6: "Domingo",
+        }
+        df_dias["DIA"] = df_dias["FECHA_DT"].dt.dayofweek.map(map_dias)
+        ord_d = pd.CategoricalDtype(categories=list(map_dias.values()), ordered=True)
+        df_dias["DIA"] = df_dias["DIA"].astype(ord_d)
+
+        san_lunes = df_dias.groupby("DIA")["% REAL"].mean().dropna().reset_index()
+        san_lunes["%_VISUAL"] = san_lunes["% REAL"].clip(upper=100)
+
+        fig_san = go.Figure()
+
+        # 1. Zonas de Semáforo de Fondo
+        fig_san.add_hrect(y0=0, y1=70, fillcolor="#e74c3c", opacity=0.1, line_width=0)
+        fig_san.add_hrect(y0=70, y1=80, fillcolor="#f1c40f", opacity=0.15, line_width=0)
+        fig_san.add_hrect(y0=80, y1=100, fillcolor="#2ecc71", opacity=0.1, line_width=0)
+
+        # 2. Barras Dinámicas con colores de Semáforo
+        fig_san.add_trace(
+            go.Bar(
+                x=san_lunes["DIA"],
+                y=san_lunes["%_VISUAL"],
+                marker_color=[
+                    "#2ecc71" if x >= 80 else "#f1c40f" if x >= 70 else "#e74c3c"
+                    for x in san_lunes["% REAL"]
+                ],
+                text=[f"{x:.0f}%" for x in san_lunes["% REAL"]],
+                textposition="auto",
+                textfont=dict(size=14, color="white", weight="bold"),
+            )
+        )
+
+        # 3. Línea de Objetivo
+        fig_san.add_hline(
+            y=80,
+            line_dash="dash",
+            line_color="#27ae60",
+            line_width=3,
+            annotation_text="🎯 META (80%)",
+            annotation_font=dict(size=13, color="#27ae60", weight="bold"),
+        )
+
+        fig_san.update_layout(
+            height=380,  # Misma altura para que se vean simétricas
+            yaxis=dict(range=[0, 105], title="Cumplimiento (%)", showgrid=False),
+            margin=dict(t=30, b=10, l=10, r=10),
+        )
+        st.plotly_chart(fig_san, use_container_width=True)
+
+    with c_paro:
+        st.subheader("🛑 Motivos de Paro del Periodo")
+        st.caption("Causas registradas que afectaron el cumplimiento del programa")
+        if not df_paros.empty:
+            cp = df_paros["MOTIVO"].value_counts().reset_index()
+            cp.columns = ["MOTIVO", "FRECUENCIA"]  # Aseguramos los nombres de columnas
+
+            fig_p = go.Figure(
+                go.Pie(
+                    labels=cp["MOTIVO"],
+                    values=cp["FRECUENCIA"],
+                    hole=0.45,  # Esto la convierte en Dona
+                    marker=dict(
+                        colors=["#e74c3c", "#f39c12", "#3498db", "#9b59b6", "#34495e"]
+                    ),
+                )
+            )
+
+            fig_p.update_traces(
+                textinfo="percent+label",
+                textposition="inside",  # Textos adentro para no ensuciar la pantalla
+                textfont=dict(size=12, color="white", weight="bold"),
+            )
+
+            fig_p.update_layout(
+                height=380,  # Misma altura que la gráfica de barras
+                showlegend=False,  # Ocultamos la leyenda porque los textos ya están en la dona
+                margin=dict(t=30, b=10, l=10, r=10),
+            )
+            st.plotly_chart(fig_p, use_container_width=True)
+        else:
+            # Si no hay paros, mostramos un mensaje de éxito grande y visible
+            st.markdown(
+                """
+                <div style='background-color: #e8f8f5; border: 2px dashed #2ecc71; padding: 40px 20px; text-align: center; border-radius: 10px; height: 380px; display: flex; flex-direction: column; justify-content: center;'>
+                    <h1 style='font-size: 50px; margin: 0;'>🎉</h1>
+                    <h3 style='color: #27ae60; margin-top: 10px;'>¡CERO PAROS!</h3>
+                    <p style='color: #7f8c8d; font-size: 16px;'>No hay incidencias registradas en este periodo.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    # --- 8. BITÁCORA VINCULADA (Con diseño visual) ---
+    st.subheader("📝 Reporte Detallado de Fallas (< 80%)")
+    df_desv = df_uni[df_uni["% REAL"] < 80].copy()
+
+    if not df_desv.empty:
+        # Cruce con notas de auditoría
+        df_a_notes = df_auditorias.copy()
+        c_f_a = encontrar_columna(df_a_notes, ["FECHA"])
+        c_p_a = encontrar_columna(df_a_notes, ["PIEZA"])
+        c_s_a = encontrar_columna(df_a_notes, ["SUBPROCESO", "SUB PRO CESO"])
+        c_n_a = encontrar_columna(df_a_notes, ["NOTAS", "NOTA"])
+
+        df_bit = pd.merge(
+            df_desv,
+            df_a_notes[[c_f_a, c_p_a, c_s_a, c_n_a]],
+            left_on=[col_prog["fecha"], col_prog["pieza"], col_bdd["subproceso"]],
+            right_on=[c_f_a, c_p_a, c_s_a],
+            how="left",
+        ).drop_duplicates(
+            subset=[col_prog["fecha"], col_prog["pieza"], col_bdd["subproceso"]]
+        )
+
+        df_bit_show = df_bit[
+            [
+                col_prog["fecha"],
+                col_prog["area"],
+                col_prog["pieza"],
+                col_bdd["subproceso"],
+                "% REAL",
+                c_n_a,
+            ]
+        ]
+        df_bit_show.columns = [
+            "FECHA",
+            "ÁREA",
+            "PIEZA",
+            "SUBPROCESO",
+            "AVANCE",
+            "NOTAS (MOTIVO)",
+        ]
+
+        # Le aplicamos la barra visual a los números crudos
+        cfg_progreso_rojo = st.column_config.ProgressColumn(
+            "AVANCE (%)",
+            format="%.1f%%",
+            min_value=0,
+            max_value=100,
+        )
+
+        st.dataframe(
+            df_bit_show.sort_values("FECHA", ascending=False),
+            column_config={"AVANCE": cfg_progreso_rojo},
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.success(
+            "¡Excelente! No hay desviaciones menores al 80% reportadas en este periodo."
+        )
+
+
+def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_bdd):
+    st.divider()
+    st.markdown("### 📊 DESEMPEÑO POR RANGO DE FECHAS (CUMPLIMIENTO REAL)")
+
+    c_r1, c_r2 = st.columns(2)
+    with c_r1:
+        f_ini_stat = st.date_input(
+            "Desde:", ahora_local().date() - timedelta(days=30), key="vfinal_ini"
+        )
+    with c_r2:
+        f_fin_stat = st.date_input("Hasta:", ahora_local().date(), key="vfinal_fin")
+
+    # Usamos el mismo motor para que esta gráfica devuelva los mismos números que el Dashboard
+    df_uni, col_aud = obtener_datos_unificados(
+        df_auditorias, df_programa, df_bdd, col_prog, col_bdd, f_ini_stat, f_fin_stat
+    )
+
+    if df_uni.empty:
+        st.warning(
+            "Faltan datos en las hojas para calcular la estadística o no hay programación."
+        )
+        return
+
+    res_final = df_uni.groupby(col_prog["area"])["% REAL"].mean().reset_index()
+
     for _, row in res_final.iterrows():
         area_n = row[col_prog["area"]]
         val_n = round(row["% REAL"], 1)
@@ -715,7 +1233,7 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
                     <div style='background:{color_n}; width:{ancho_barra}%; height:100%; border-radius:10px;'></div>
                 </div>
             </div>
-            """,
+        """,
             unsafe_allow_html=True,
         )
 
@@ -792,149 +1310,178 @@ def main():
         else:
             st.caption("No hay piezas programadas para la fecha y área seleccionadas.")
 
-    st.markdown(
-        f"""
-        <div style='display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;'>
-            <h1 style='margin:0;'>SISTEMA <span style='color:#E32B13;'>NSG</span> AUDITORÍA</h1>
-            <div style='background:#EEE; padding: 8px 20px; border-radius:25px; font-weight:bold; color:#333; border: 1px solid #CCC;'>
-                ÁREA: {area_sel}
+    # Línea 823
+    tab_captura, tab_dashboard = st.tabs(
+        ["📦 CAPTURA OPERATIVA", "📊 DASHBOARD DIRECCIÓN"]
+    )
+
+    with tab_captura:
+
+        st.markdown(
+            f"""
+            <div style='display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;'>
+                <h1 style='margin:0;'>SISTEMA <span style='color:#E32B13;'>NSG</span> AUDITORÍA</h1>
+                <div style='background:#EEE; padding: 8px 20px; border-radius:25px; font-weight:bold; color:#333; border: 1px solid #CCC;'>
+                    ÁREA: {area_sel}
+                </div>
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    avance_global, df_resumen_final = calcular_resumen(
-        df_plan_dia, col_prog, df_bdd, col_bdd, df_auditorias, fecha_sel, area_sel
-    )
-
-    render_kpis(avance_global, df_resumen_final)
-    render_graficos(avance_global, df_resumen_final)
-
-    st.markdown("<div class='capture-container'>", unsafe_allow_html=True)
-    st.subheader("REGISTRO DE AUDITORÍA")
-
-    df_aud_hoy, col_aud = obtener_auditorias_hoy(df_auditorias, fecha_sel, area_sel)
-    piezas_validas = (
-        df_plan_dia[col_prog["pieza"]].unique()
-        if not df_plan_dia.empty and col_prog.get("pieza")
-        else []
-    )
-    piezas_pendientes = obtener_piezas_pendientes(
-        df_plan_dia, col_prog, df_bdd, col_bdd, df_aud_hoy, col_aud, area_sel, corte_sel
-    )
-    lista_desplegable = piezas_pendientes if piezas_pendientes else list(piezas_validas)
-
-    c1, c2, c3 = st.columns([1, 1, 1])
-    f_id = st.session_state.form_id
-
-    with c1:
-        if not lista_desplegable:
-            st.warning("No hay piezas disponibles para auditar.")
-            p_sel = None
-            df_s = pd.DataFrame()
-            sub_list = []
-        else:
-            p_sel = st.selectbox("PIEZA", lista_desplegable, help="Piezas programadas.")
-            if not validar_columnas(col_bdd, ["pieza", "proceso", "subproceso"]):
-                df_s = df_bdd[
-                    (df_bdd[col_bdd["pieza"]] == p_sel)
-                    & (df_bdd[col_bdd["proceso"]] == area_sel)
-                ].copy()
-            else:
-                df_s = pd.DataFrame()
-                st.error("No se encontraron columnas clave en la hoja BDD.")
-
-            reps = []
-            if (
-                p_sel
-                and not df_aud_hoy.empty
-                and col_aud.get("corte")
-                and col_aud.get("pieza")
-            ):
-                reps = df_aud_hoy[
-                    (df_aud_hoy[col_aud["corte"]] == corte_sel)
-                    & (df_aud_hoy[col_aud["pieza"]] == p_sel)
-                ][col_aud["subproceso"]].tolist()
-
-            sub_list = (
-                [sub for sub in df_s[col_bdd["subproceso"]].unique() if sub not in reps]
-                if not df_s.empty
-                else []
-            )
-
-        s_sel = st.selectbox(
-            "SUB-PROCESO",
-            sub_list if sub_list else [PIEZA_TERMINADA],
-            help="Operación a auditar.",
+            """,
+            unsafe_allow_html=True,
         )
 
-    with c2:
-        ops = st.number_input("OPERADORES", min_value=1, step=1, key=f"ops_{f_id}")
-        real = st.number_input("CANTIDAD REAL", min_value=0, step=1, key=f"r_{f_id}")
+        avance_global, df_resumen_final = calcular_resumen(
+            df_plan_dia, col_prog, df_bdd, col_bdd, df_auditorias, fecha_sel, area_sel
+        )
 
-    with c3:
-        mins = st.number_input("MIN. PARO", min_value=0, step=1, key=f"m_{f_id}")
-        mot = st.selectbox("MOTIVO PARO", MOTIVOS_PARO, key=f"mot_{f_id}")
+        render_kpis(avance_global, df_resumen_final)
+        render_graficos(avance_global, df_resumen_final)
 
-    notas = st.text_input("NOTAS", key=f"n_{f_id}")
+        st.markdown("<div class='capture-container'>", unsafe_allow_html=True)
+        st.subheader("REGISTRO DE AUDITORÍA")
 
-    if s_sel and s_sel != PIEZA_TERMINADA:
-        try:
-            if not df_s.empty and s_sel in df_s[col_bdd["subproceso"]].values:
-                if not col_bdd.get("pzxh"):
-                    st.warning(
-                        "No se encontró la columna de capacidad PZ X H en la BDD."
-                    )
-                else:
-                    pz_h_val = df_s[df_s[col_bdd["subproceso"]] == s_sel][
-                        col_bdd["pzxh"]
-                    ].iloc[0]
-                    pz_h = float(pz_h_val) if pz_h_val else 0
-                    meta = int((pz_h * max(0, horas_acum - (mins / 60))) * ops)
-                    st.info(f"Meta: {meta} piezas")
+        df_aud_hoy, col_aud = obtener_auditorias_hoy(df_auditorias, fecha_sel, area_sel)
+        piezas_validas = (
+            df_plan_dia[col_prog["pieza"]].unique()
+            if not df_plan_dia.empty and col_prog.get("pieza")
+            else []
+        )
+        piezas_pendientes = obtener_piezas_pendientes(
+            df_plan_dia,
+            col_prog,
+            df_bdd,
+            col_bdd,
+            df_aud_hoy,
+            col_aud,
+            area_sel,
+            corte_sel,
+        )
+        lista_desplegable = (
+            piezas_pendientes if piezas_pendientes else list(piezas_validas)
+        )
 
-                    if mot == "OTRO (ESPECIFICAR EN NOTAS)" and not notas.strip():
-                        st.warning(
-                            "Captura una nota cuando el motivo de paro sea OTRO."
-                        )
-                    elif st.button("GUARDAR REGISTRO"):
-                        exito = guardar_registro(
-                            fecha_sel,
-                            area_sel,
-                            corte_sel,
-                            p_sel,
-                            s_sel,
-                            real,
-                            meta,
-                            ops,
-                            mot,
-                            notas,
-                        )
-                        if exito:
-                            st.toast("Guardado exitoso")
-                            invalidar_cache_hoja("AUDITAR")
-                            st.session_state.form_id += 1
-                            time.sleep(0.5)
-                            st.rerun()
+        c1, c2, c3 = st.columns([1, 1, 1])
+        f_id = st.session_state.form_id
+
+        with c1:
+            if not lista_desplegable:
+                st.warning("No hay piezas disponibles para auditar.")
+                p_sel = None
+                df_s = pd.DataFrame()
+                sub_list = []
             else:
-                st.warning("No hay datos de capacidad para este subproceso.")
-        except ValueError:
-            st.error("La capacidad PZ X H contiene un valor no numérico.")
-        except Exception as exc:
-            st.error(f"Error al calcular o guardar: {exc}")
-    else:
-        st.success("Pieza completada.")
+                p_sel = st.selectbox(
+                    "PIEZA", lista_desplegable, help="Piezas programadas."
+                )
+                if not validar_columnas(col_bdd, ["pieza", "proceso", "subproceso"]):
+                    df_s = df_bdd[
+                        (df_bdd[col_bdd["pieza"]] == p_sel)
+                        & (df_bdd[col_bdd["proceso"]] == area_sel)
+                    ].copy()
+                else:
+                    df_s = pd.DataFrame()
+                    st.error("No se encontraron columnas clave en la hoja BDD.")
 
-    st.markdown("</div>", unsafe_allow_html=True)
+                reps = []
+                if (
+                    p_sel
+                    and not df_aud_hoy.empty
+                    and col_aud.get("corte")
+                    and col_aud.get("pieza")
+                ):
+                    reps = df_aud_hoy[
+                        (df_aud_hoy[col_aud["corte"]] == corte_sel)
+                        & (df_aud_hoy[col_aud["pieza"]] == p_sel)
+                    ][col_aud["subproceso"]].tolist()
 
-    render_estatus_detallado(df_resumen_final)
-    render_capacidades(
-        df_s if "df_s" in locals() else pd.DataFrame(),
-        col_bdd,
-        p_sel if "p_sel" in locals() else None,
-    )
-    render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_bdd)
+                sub_list = (
+                    [
+                        sub
+                        for sub in df_s[col_bdd["subproceso"]].unique()
+                        if sub not in reps
+                    ]
+                    if not df_s.empty
+                    else []
+                )
+
+            s_sel = st.selectbox(
+                "SUB-PROCESO",
+                sub_list if sub_list else [PIEZA_TERMINADA],
+                help="Operación a auditar.",
+            )
+
+        with c2:
+            ops = st.number_input("OPERADORES", min_value=1, step=1, key=f"ops_{f_id}")
+            real = st.number_input(
+                "CANTIDAD REAL", min_value=0, step=1, key=f"r_{f_id}"
+            )
+
+        with c3:
+            mins = st.number_input("MIN. PARO", min_value=0, step=1, key=f"m_{f_id}")
+            mot = st.selectbox("MOTIVO PARO", MOTIVOS_PARO, key=f"mot_{f_id}")
+
+        notas = st.text_input("NOTAS", key=f"n_{f_id}")
+
+        if s_sel and s_sel != PIEZA_TERMINADA:
+            try:
+                if not df_s.empty and s_sel in df_s[col_bdd["subproceso"]].values:
+                    if not col_bdd.get("pzxh"):
+                        st.warning(
+                            "No se encontró la columna de capacidad PZ X H en la BDD."
+                        )
+                    else:
+                        pz_h_val = df_s[df_s[col_bdd["subproceso"]] == s_sel][
+                            col_bdd["pzxh"]
+                        ].iloc[0]
+                        pz_h = float(pz_h_val) if pz_h_val else 0
+                        meta = int((pz_h * max(0, horas_acum - (mins / 60))) * ops)
+                        st.info(f"Meta: {meta} piezas")
+
+                        if mot == "OTRO (ESPECIFICAR EN NOTAS)" and not notas.strip():
+                            st.warning(
+                                "Captura una nota cuando el motivo de paro sea OTRO."
+                            )
+                        elif st.button("GUARDAR REGISTRO"):
+                            exito = guardar_registro(
+                                fecha_sel,
+                                area_sel,
+                                corte_sel,
+                                p_sel,
+                                s_sel,
+                                real,
+                                meta,
+                                ops,
+                                mot,
+                                notas,
+                            )
+                            if exito:
+                                st.toast("Guardado exitoso")
+                                invalidar_cache_hoja("AUDITAR")
+                                st.session_state.form_id += 1
+                                time.sleep(0.5)
+                                st.rerun()
+                else:
+                    st.warning("No hay datos de capacidad para este subproceso.")
+            except ValueError:
+                st.error("La capacidad PZ X H contiene un valor no numérico.")
+            except Exception as exc:
+                st.error(f"Error al calcular o guardar: {exc}")
+        else:
+            st.success("Pieza completada.")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        render_estatus_detallado(df_resumen_final)
+        render_capacidades(
+            df_s if "df_s" in locals() else pd.DataFrame(),
+            col_bdd,
+            p_sel if "p_sel" in locals() else None,
+        )
+        render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_bdd)
+
+    with tab_dashboard:
+        render_dashboard_direccion(
+            df_auditorias, df_programa, df_bdd, col_prog, col_bdd
+        )
 
 
 if __name__ == "__main__":
