@@ -1312,7 +1312,7 @@ def main():
 
     # Línea 823
     tab_captura, tab_dashboard = st.tabs(
-        ["📦 CAPTURA OPERATIVA", "📊 DASHBOARD DIRECCIÓN"]
+        ["📦 CAPTURA Y AUDITORIA", "📊 VER RESULTADOS"]
     )
 
     with tab_captura:
