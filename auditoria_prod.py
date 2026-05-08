@@ -27,14 +27,20 @@ PIEZA_TERMINADA = "PIEZA TERMINADA"
 
 MOTIVOS_PARO = [
     "SIN PARO",
-    "FALLA MECANICA",
-    "FALLA ELECTRICA",
-    "FALTA DE MATERIAL",
+    "FALLA MECÁNICA / EQUIPO",
+    "FALLA ELÉCTRICA",
+    "FALTA DE MATERIAL / INSUMO",
+    "FALTA DE PROGRAMA / INSTRUCCIÓN",
     "CAMBIO DE MODELO / SET-UP",
     "AUSENCIA DE OPERADOR",
-    "JUNTA DE CALIDAD / SEGURIDAD",
+    "PERSONAL REASIGNADO A URGENCIA",
+    "RETRABAJO / CORRECCIÓN DE PIEZAS",
+    "BLOQUEO POR CALIDAD",
+    "BLOQUEO POR SEGURIDAD",
+    "FALTA DE HERRAMENTAL / DISPOSITIVO",
+    "ESPERA DE PROCESO ANTERIOR",
     "LIMPIEZA / 5S",
-    "OTRO (ESPECIFICAR EN NOTAS)",
+    "OTRO — ESPECIFICAR EN NOTAS",
 ]
 
 
@@ -519,7 +525,7 @@ def render_graficos(avance_global, df_resumen_final):
             )
         )
         fig.update_layout(height=280, margin=dict(l=30, r=30, t=30, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with c_b:
         if not df_resumen_final.empty:
@@ -546,7 +552,7 @@ def render_graficos(avance_global, df_resumen_final):
                 margin=dict(l=0, r=0, t=20, b=0),
                 legend=dict(orientation="h", y=1.1),
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.plotly_chart(fig_bar, width="stretch")
 
 
 def render_estatus_detallado(df_resumen_final):
@@ -694,14 +700,15 @@ def obtener_datos_unificados(
 def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col_bdd):
     st.markdown("## 🏭 Resultados del Programa de Producción NSG")
 
-    # --- 1. FILTROS DE FECHA (Blindados) ---
+    # --- CAMBIO: Configuración de fechas para que inicie en el día 1 del mes actual ---
+    hoy = ahora_local().date()
+    primero_del_mes = hoy.replace(day=1)
+
     c1, c2 = st.columns(2)
     with c1:
-        f_ini = st.date_input(
-            "Analizar desde:", ahora_local().date() - timedelta(days=7), key="dash_f1"
-        )
+        f_ini = st.date_input("Analizar desde:", primero_del_mes, key="dash_f1")
     with c2:
-        f_fin = st.date_input("Hasta:", ahora_local().date(), key="dash_f2")
+        f_fin = st.date_input("Hasta:", hoy, key="dash_f2")
 
     # --- VALIDACIÓN DE HOJAS ---
     hojas_vacias = []
@@ -734,31 +741,101 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
     dias_riesgo = len(df_dias[(df_dias["% REAL"] >= 70) & (df_dias["% REAL"] < 80)])
     dias_perdidos = len(df_dias[df_dias["% REAL"] < 70])
 
-    # --- 3. KPIs GLOBALES Y SEMÁFORO (Diseño Operativo) ---
+    # --- 3. KPIs GLOBALES Y CÁLCULO DE PERIODO ANTERIOR ---
     cumplimiento_total = df_uni["% REAL"].mean()
 
+    # 1. Calcular el periodo de tiempo anterior (para el comparativo Delta)
+    dias_periodo = (f_fin - f_ini).days
+    f_fin_prev = f_ini - timedelta(days=1)
+    f_ini_prev = f_fin_prev - timedelta(days=dias_periodo)
+
+    # 2. Correr el motor con las fechas pasadas
+    df_uni_prev, _ = obtener_datos_unificados(
+        df_auditorias, df_programa, df_bdd, col_prog, col_bdd, f_ini_prev, f_fin_prev
+    )
+    cumplimiento_prev = df_uni_prev["% REAL"].mean() if not df_uni_prev.empty else 0
+
+    # 3. Preparar métricas previas de los días
+    if not df_uni_prev.empty:
+        df_dias_prev = df_uni_prev.groupby("FECHA_DT")["% REAL"].mean().reset_index()
+        total_dias_prev = len(df_dias_prev)
+        dias_ganados_prev = len(df_dias_prev[df_dias_prev["% REAL"] >= 80])
+        dias_riesgo_prev = len(
+            df_dias_prev[(df_dias_prev["% REAL"] >= 70) & (df_dias_prev["% REAL"] < 80)]
+        )
+        dias_perdidos_prev = len(df_dias_prev[df_dias_prev["% REAL"] < 70])
+    else:
+        total_dias_prev = dias_ganados_prev = dias_riesgo_prev = dias_perdidos_prev = 0
+
+    # 4. Lógica experta para pintar flechas y colores correctos
+    def generar_delta(actual, previo, formato, tipo):
+        if df_uni_prev.empty:
+            return "<div style='color: #bdc3c7; font-size: 13px; font-weight: 600; margin-top: 5px;'>Sin historial previo</div>"
+
+        delta = actual - previo
+        if delta == 0:
+            return "<div style='color: #95a5a6; font-size: 13px; font-weight: 600; margin-top: 5px;'>▬ Igual que ant.</div>"
+
+        # Formateo de número (con o sin decimales/porcentaje)
+        if formato == "pct":
+            str_delta = f"{abs(delta):.1f}%"
+        else:
+            str_delta = f"{abs(delta)}"
+
+        # Asignación de colores según si es bueno o malo subir
+        if tipo == "bueno_subir":  # Ej. Cumplimiento, Días ganados
+            color = "#27ae60" if delta > 0 else "#e74c3c"
+        elif tipo == "malo_subir":  # Ej. Días perdidos (Si suben, es malo)
+            color = "#e74c3c" if delta > 0 else "#27ae60"
+        else:  # Neutral (Días trabajados)
+            color = "#7f8c8d"
+
+        flecha = "▲" if delta > 0 else "▼"
+        signo = "+" if delta > 0 else "-"
+
+        return f"<div style='color: {color}; font-size: 13px; font-weight: 600; margin-top: 5px;'>{flecha} {signo}{str_delta} vs ant.</div>"
+
+    # Calculamos los 5 deltas
+    html_d_cumpl = generar_delta(
+        cumplimiento_total, cumplimiento_prev, "pct", "bueno_subir"
+    )
+    html_d_dias = generar_delta(total_dias, total_dias_prev, "num", "neutral")
+    html_d_ganados = generar_delta(
+        dias_ganados, dias_ganados_prev, "num", "bueno_subir"
+    )
+    html_d_riesgo = generar_delta(dias_riesgo, dias_riesgo_prev, "num", "malo_subir")
+    html_d_perdidos = generar_delta(
+        dias_perdidos, dias_perdidos_prev, "num", "malo_subir"
+    )
+
+    # 5. Renderizar las tarjetas unificadas
     st.markdown(
         f"""
 <div style='display: flex; justify-content: space-between; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;'>
     <div style='background: white; border-top: 5px solid #3498db; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
         <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🎯 CUMPLIMIENTO DEL PROGRAMA</div>
         <div style='font-size: 28px; color: #2980b9; font-weight: 900; margin-top: 5px;'>{cumplimiento_total:.1f}%</div>
+        {html_d_cumpl}
     </div>
     <div style='background: white; border-top: 5px solid #95a5a6; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
         <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🗓️ DÍAS TRABAJADOS (PERIODO)</div>
         <div style='font-size: 28px; color: #7f8c8d; font-weight: 900; margin-top: 5px;'>{total_dias}</div>
+        {html_d_dias}
     </div>
     <div style='background: white; border-top: 5px solid #2ecc71; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
         <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🟢 META LOGRADA (80% o más)</div>
         <div style='font-size: 28px; color: #27ae60; font-weight: 900; margin-top: 5px;'>{dias_ganados}</div>
+        {html_d_ganados}
     </div>
     <div style='background: white; border-top: 5px solid #f1c40f; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
         <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🟡 CASI LLEGAMOS (70% - 79%)</div>
         <div style='font-size: 28px; color: #f39c12; font-weight: 900; margin-top: 5px;'>{dias_riesgo}</div>
+        {html_d_riesgo}
     </div>
     <div style='background: white; border-top: 5px solid #e74c3c; padding: 15px; border-radius: 8px; flex: 1; text-align: center; min-width: 150px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>
         <div style='font-size: 12px; color: #7f8c8d; font-weight: bold; text-transform: uppercase;'>🔴 DÍAS CRÍTICOS (Menos de 70%)</div>
         <div style='font-size: 28px; color: #c0392b; font-weight: 900; margin-top: 5px;'>{dias_perdidos}</div>
+        {html_d_perdidos}
     </div>
 </div>
 """,
@@ -919,7 +996,7 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
             xaxis=dict(showgrid=False),
             margin=dict(t=30, b=10, l=10, r=10),
         )
-        st.plotly_chart(fig_t, use_container_width=True)
+        st.plotly_chart(fig_t, width="stretch")
 
     with col_der:
         st.subheader("🏢 Cumplimiento del periodo por Área")
@@ -960,7 +1037,7 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
             yaxis=dict(range=[0, 105], title="Cumplimiento (%)", showgrid=False),
             margin=dict(t=30, b=10, l=10, r=10),
         )
-        st.plotly_chart(fig_a, use_container_width=True)
+        st.plotly_chart(fig_a, width="stretch")
 
     st.divider()
 
@@ -991,7 +1068,7 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
             top_p,
             column_config={col_prog["pieza"]: "PIEZA", "% REAL": cfg_progreso},
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
         st.write("⭐ **TOP 5: Operaciones con mejor avance:**")
@@ -1000,7 +1077,7 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
             top_s,
             column_config={col_bdd["subproceso"]: "OPERACIÓN", "% REAL": cfg_progreso},
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     with c_worst:
@@ -1012,7 +1089,7 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
             bot_p,
             column_config={col_prog["pieza"]: "PIEZA", "% REAL": cfg_progreso},
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
         st.write("🛑 **ALERTA: Operaciones con mayor rezago:**")
@@ -1021,7 +1098,7 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
             bot_s,
             column_config={col_bdd["subproceso"]: "OPERACIÓN", "% REAL": cfg_progreso},
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     st.divider()
@@ -1085,7 +1162,7 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
             yaxis=dict(range=[0, 105], title="Cumplimiento (%)", showgrid=False),
             margin=dict(t=30, b=10, l=10, r=10),
         )
-        st.plotly_chart(fig_san, use_container_width=True)
+        st.plotly_chart(fig_san, width="stretch")
 
     with c_paro:
         st.subheader("🛑 Motivos de Paro del Periodo")
@@ -1116,7 +1193,7 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
                 showlegend=False,  # Ocultamos la leyenda porque los textos ya están en la dona
                 margin=dict(t=30, b=10, l=10, r=10),
             )
-            st.plotly_chart(fig_p, use_container_width=True)
+            st.plotly_chart(fig_p, width="stretch")
         else:
             # Si no hay paros, mostramos un mensaje de éxito grande y visible
             st.markdown(
@@ -1182,26 +1259,79 @@ def render_dashboard_direccion(df_auditorias, df_programa, df_bdd, col_prog, col
         st.dataframe(
             df_bit_show.sort_values("FECHA", ascending=False),
             column_config={"AVANCE": cfg_progreso_rojo},
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
         st.success(
             "¡Excelente! No hay desviaciones menores al 80% reportadas en este periodo."
         )
+    st.divider()
+
+    # --- 9. ANÁLISIS DE RITMO DE PRODUCCIÓN (Takt Time) ---
+    st.markdown("### ⏱️ Análisis de Ritmo de Producción (Aportación al Turno)")
+    st.info(
+        "💡 **Tip de Planta:** Si un bloque horario está muy por debajo del 26.6%, revisa en la bitácora si hubo falta de material, falla de máquinas o cambios de modelo específicos en esas horas."
+    )
+
+    c_ritmo_global, c_ritmo_area = st.columns(2)
+
+    with c_ritmo_global:
+        st.selectbox(
+            "Vista global de la planta:",
+            ["TODAS LAS ÁREAS"],
+            disabled=True,
+            key="sel_dummy",
+        )
+        # Le ponemos el sufijo "izq"
+        render_ritmo_por_bloque(
+            df_auditorias,
+            df_programa,
+            df_bdd,
+            col_prog,
+            col_bdd,
+            f_ini,
+            f_fin,
+            "TODAS",
+            "izq",
+        )
+
+    with c_ritmo_area:
+        lista_areas_dash = obtener_lista_areas(df_programa, col_prog)
+        area_ritmo = st.selectbox(
+            "Selecciona un Área específica para ver su detalle:",
+            lista_areas_dash,
+            key="sel_ritmo_area_dashboard",
+        )
+        # Le ponemos el sufijo "der"
+        render_ritmo_por_bloque(
+            df_auditorias,
+            df_programa,
+            df_bdd,
+            col_prog,
+            col_bdd,
+            f_ini,
+            f_fin,
+            area_ritmo,
+            "der",
+        )
 
 
 def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_bdd):
     st.divider()
-    st.markdown("### 📊 DESEMPEÑO POR RANGO DE FECHAS (CUMPLIMIENTO REAL)")
+    st.markdown("### 📊 DESEMPEÑO DEL MES EN CURSO (ACUMULADO)")
+
+    # --- CAMBIO: Fechas predefinidas al Mes en Curso ---
+    hoy = ahora_local().date()
+    primero_del_mes = hoy.replace(day=1)  # Fuerza el inicio al día 1 del mes actual
 
     c_r1, c_r2 = st.columns(2)
     with c_r1:
-        f_ini_stat = st.date_input(
-            "Desde:", ahora_local().date() - timedelta(days=30), key="vfinal_ini"
-        )
+        f_ini_stat = st.date_input("Desde:", primero_del_mes, key="vfinal_ini")
     with c_r2:
-        f_fin_stat = st.date_input("Hasta:", ahora_local().date(), key="vfinal_fin")
+        f_fin_stat = st.date_input("Hasta:", hoy, key="vfinal_fin")
+
+    # ... el resto del código de la función sigue igual ...
 
     # Usamos el mismo motor para que esta gráfica devuelva los mismos números que el Dashboard
     df_uni, col_aud = obtener_datos_unificados(
@@ -1236,6 +1366,234 @@ def render_estadistica_rango(df_auditorias, df_programa, df_bdd, col_prog, col_b
         """,
             unsafe_allow_html=True,
         )
+
+
+def render_ritmo_por_bloque(
+    df_auditorias,
+    df_programa,
+    df_bdd,
+    col_prog,
+    col_bdd,
+    f_ini,
+    f_fin,
+    area_sel,
+    sufijo="1",
+):
+    es_global = area_sel == "TODAS"
+    titulo_str = "🏭 PLANTA COMPLETA" if es_global else f"ÁREA: {area_sel}"
+
+    st.caption(f"Aportación a la meta del día (**{titulo_str}**)")
+
+    # 1. Preparar Base Programada (Cruce Programa x BDD)
+    df_p = df_programa.copy()
+    df_p["FECHA_DT"] = pd.to_datetime(
+        df_p[col_prog["fecha"]], format="%d/%m/%Y", errors="coerce"
+    )
+    df_p = df_p[
+        (df_p["FECHA_DT"].dt.date >= f_ini) & (df_p["FECHA_DT"].dt.date <= f_fin)
+    ]
+
+    if not es_global:
+        df_p = df_p[df_p[col_prog["area"]] == area_sel]
+
+    if df_p.empty:
+        st.info("No hay programación para estas fechas.")
+        return
+
+    # Filtro de Moldeo
+    mask_m = df_p[col_prog["area"]].str.upper() == "MOLDEO"
+    df_p_m = df_p[
+        mask_m
+        & df_p[col_prog["pieza"]].str.contains(
+            "GENERAL|VACIADO|ADOBES", case=False, na=False
+        )
+    ]
+    df_p_o = df_p[~mask_m]
+    df_p_final = pd.concat([df_p_m, df_p_o])
+    df_p_final[col_prog["total"]] = convertir_serie_numerica(
+        df_p_final[col_prog["total"]]
+    ).fillna(0)
+
+    df_base = pd.merge(
+        df_p_final[
+            [
+                col_prog["fecha"],
+                col_prog["area"],
+                col_prog["pieza"],
+                col_prog["total"],
+                "FECHA_DT",
+            ]
+        ],
+        df_bdd[[col_bdd["pieza"], col_bdd["subproceso"], col_bdd["proceso"]]],
+        left_on=col_prog["pieza"],
+        right_on=col_bdd["pieza"],
+        how="inner",
+    )
+    # Se asegura que el proceso corresponda al área correcta (Vital para la vista Global)
+    df_base = df_base[df_base[col_bdd["proceso"]] == df_base[col_prog["area"]]]
+
+    if not es_global:
+        df_base = df_base[df_base[col_bdd["proceso"]] == area_sel]
+
+    if df_base.empty:
+        st.info("No se pudieron cruzar las piezas programadas.")
+        return
+
+    prog_por_dia = df_base.groupby("FECHA_DT")[col_prog["total"]].sum().to_dict()
+
+    # 2. Preparar Auditorías
+    col_aud = {
+        "fecha": encontrar_columna(df_auditorias, ["FECHA"]),
+        "pieza": encontrar_columna(df_auditorias, ["PIEZA"]),
+        "subproceso": encontrar_columna(
+            df_auditorias,
+            ["SUBPROCESO", "SUB PROCESO", "SUB_PROCESO"],
+            contiene_todos=["SUB", "CESO"],
+        ),
+        "real": encontrar_columna(df_auditorias, ["REAL"]),
+        "corte": encontrar_columna(df_auditorias, ["CORTE"]),
+        "area": encontrar_columna(df_auditorias, ["AREA", "ÁREA"]),
+    }
+
+    df_a = df_auditorias.copy()
+    df_a["FECHA_DT"] = pd.to_datetime(
+        df_a[col_aud["fecha"]], format="%d/%m/%Y", errors="coerce"
+    )
+    df_a = df_a[
+        (df_a["FECHA_DT"].dt.date >= f_ini) & (df_a["FECHA_DT"].dt.date <= f_fin)
+    ]
+
+    if not es_global:
+        df_a = df_a[df_a[col_aud["area"]] == area_sel]
+
+    df_a[col_aud["real"]] = pd.to_numeric(
+        df_a[col_aud["real"]], errors="coerce"
+    ).fillna(0)
+
+    # 3. Función auxiliar para cruzar datos hasta un corte específico
+    def calcular_real_hasta_corte(df_aud, cortes_permitidos):
+        df_corte = df_aud[df_aud[col_aud["corte"]].isin(cortes_permitidos)]
+        if df_corte.empty:
+            return {}
+        # Agrupamos por AREA también para evitar choques entre piezas con mismo nombre en distintas áreas
+        df_max = (
+            df_corte.groupby(
+                ["FECHA_DT", col_aud["area"], col_aud["pieza"], col_aud["subproceso"]]
+            )[col_aud["real"]]
+            .max()
+            .reset_index()
+        )
+
+        df_cruzado = pd.merge(
+            df_base,
+            df_max,
+            left_on=[
+                "FECHA_DT",
+                col_prog["area"],
+                col_prog["pieza"],
+                col_bdd["subproceso"],
+            ],
+            right_on=[
+                "FECHA_DT",
+                col_aud["area"],
+                col_aud["pieza"],
+                col_aud["subproceso"],
+            ],
+            how="left",
+        ).fillna({col_aud["real"]: 0})
+        return df_cruzado.groupby("FECHA_DT")[col_aud["real"]].sum().to_dict()
+
+    corte1 = ["11:00 AM (3h)"]
+    corte2 = ["11:00 AM (3h)", "14:00 PM (6h)"]
+    corte3 = ["11:00 AM (3h)", "14:00 PM (6h)", "17:00 PM (9h)"]
+
+    real_11 = calcular_real_hasta_corte(df_a, corte1)
+    real_14 = calcular_real_hasta_corte(df_a, corte2)
+    real_17 = calcular_real_hasta_corte(df_a, corte3)
+
+    # 4. Calcular Aportaciones Reales
+    bloques = []
+    for fecha, total_prog in prog_por_dia.items():
+        if total_prog == 0:
+            continue
+
+        r11 = real_11.get(fecha, 0)
+        r14 = real_14.get(fecha, 0)
+        r17 = real_17.get(fecha, 0)
+
+        b1 = r11
+        b2 = max(0, r14 - r11)
+        b3 = max(0, r17 - r14)
+
+        bloques.append(
+            {"Bloque": "08:00 - 11:00", "Aportacion": (b1 / total_prog) * 100}
+        )
+        bloques.append(
+            {"Bloque": "11:00 - 14:00", "Aportacion": (b2 / total_prog) * 100}
+        )
+        bloques.append(
+            {"Bloque": "14:00 - 17:00", "Aportacion": (b3 / total_prog) * 100}
+        )
+
+    if not bloques:
+        st.info("No hay auditorías registradas.")
+        return
+
+    df_bloques = (
+        pd.DataFrame(bloques).groupby("Bloque")["Aportacion"].mean().reset_index()
+    )
+
+    # 4. Graficar con Psicología Visual (Semáforo y Emojis)
+    # Cambiamos los textos fríos por etiquetas que la gente reconoce al instante
+    etiquetas_amigables = {
+        "08:00 - 11:00": "☀️ Arranque<br>(08:00-11:00)",
+        "11:00 - 14:00": "🌮 Medio Día<br>(11:00-14:00)",
+        "14:00 - 17:00": "🏁 Cierre<br>(14:00-17:00)",
+    }
+    df_bloques["Bloque_Visual"] = df_bloques["Bloque"].map(etiquetas_amigables)
+
+    # Lógica de Semáforo: Verde (>= 26.6%), Amarillo (>= 20%), Rojo (< 20%)
+    colores_semaforo = []
+    for val in df_bloques["Aportacion"]:
+        if val >= 26.6:
+            colores_semaforo.append("#2ecc71")  # Verde: Lograron la cuota del bloque
+        elif val >= 20.0:
+            colores_semaforo.append(
+                "#f1c40f"
+            )  # Amarillo: Le echaron ganas pero faltó un poco
+        else:
+            colores_semaforo.append("#e74c3c")  # Rojo: Se nos cayó la producción aquí
+
+    fig_b = go.Figure()
+    fig_b.add_trace(
+        go.Bar(
+            x=df_bloques["Bloque_Visual"],
+            y=df_bloques["Aportacion"],
+            marker_color=colores_semaforo,
+            text=[f"{x:.1f}%" for x in df_bloques["Aportacion"]],
+            textposition="auto",
+            textfont=dict(color="white", weight="bold", size=15),
+        )
+    )
+
+    fig_b.add_hline(
+        y=26.6,
+        line_dash="dash",
+        line_color="#2c3e50",
+        line_width=2,
+        annotation_text="🎯 CUOTA DEL BLOQUE (26.6%)",
+        annotation_font=dict(size=12, color="#2c3e50", weight="bold"),
+    )
+
+    fig_b.update_layout(
+        height=350,
+        margin=dict(t=20, b=20, l=10, r=10),
+        yaxis=dict(
+            range=[0, 45], showticklabels=False
+        ),  # Ocultamos los números del eje Y para no saturar
+        xaxis=dict(tickfont=dict(size=13, weight="bold")),
+    )
+    st.plotly_chart(fig_b, width="stretch", key=f"grafica_ritmo_{area_sel}_{sufijo}")
 
 
 def main():
@@ -1277,7 +1635,7 @@ def main():
 
     with st.sidebar:
         if os.path.exists(LOGO_FILENAME):
-            st.image(LOGO_FILENAME, use_container_width=True)
+            st.image(LOGO_FILENAME, width="stretch")
 
         st.markdown(
             "<h3 style='text-align: center;'>CONTROL DE ACCESO</h3>",
@@ -1305,7 +1663,7 @@ def main():
             st.dataframe(
                 df_plan_dia[[col_prog["pieza"], col_prog["total"]]],
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.caption("No hay piezas programadas para la fecha y área seleccionadas.")
@@ -1336,8 +1694,51 @@ def main():
         render_kpis(avance_global, df_resumen_final)
         render_graficos(avance_global, df_resumen_final)
 
-        st.markdown("<div class='capture-container'>", unsafe_allow_html=True)
-        st.subheader("REGISTRO DE AUDITORÍA")
+        # --- NUEVA SECCIÓN: PAROS DEL DÍA ---
+        st.markdown(f"### 🛑 Paros Reportados Hoy ({area_sel})")
+
+        col_notas = encontrar_columna(df_auditorias, ["NOTAS", "NOTA"])
+        col_f = encontrar_columna(df_auditorias, ["FECHA"])
+        col_a = encontrar_columna(df_auditorias, ["AREA", "ÁREA"])
+        col_p = encontrar_columna(df_auditorias, ["PIEZA"])
+        col_s = encontrar_columna(
+            df_auditorias, ["SUBPROCESO", "SUB PRO CESO", "SUB_PROCESO"]
+        )
+
+        if not df_auditorias.empty and col_notas and col_f and col_a:
+            # Filtramos la base para sacar solo los de la fecha y área que estamos viendo
+            df_paros_hoy = df_auditorias[
+                (df_auditorias[col_f] == fecha_sel) & (df_auditorias[col_a] == area_sel)
+            ].copy()
+
+            # Filtramos para quedarnos SOLAMENTE con los que tienen un paro real (Excluimos [SIN PARO])
+            df_paros_hoy = df_paros_hoy[
+                df_paros_hoy[col_notas].astype(str).str.contains(r"\[", na=False)
+                & ~df_paros_hoy[col_notas]
+                .astype(str)
+                .str.contains(r"\[SIN PARO\]", na=False)
+            ]
+
+            if not df_paros_hoy.empty:
+                for _, row in df_paros_hoy.iterrows():
+                    p_text = row[col_p] if col_p else "N/A"
+                    s_text = row[col_s] if col_s else "N/A"
+                    n_text = row[col_notas]
+                    # st.error genera un cuadro rojo muy visual que llama la atención
+                    st.error(f"⚠️ **PIEZA: {p_text}** ({s_text}) ➔ {n_text}")
+            else:
+                # st.success genera un cuadro verde indicando que todo va bien
+                st.success(
+                    "✅ ¡Excelente! Sin paros reportados hasta el momento en este turno."
+                )
+        else:
+            st.success(
+                "✅ ¡Excelente! Sin paros reportados hasta el momento en este turno."
+            )
+
+        # --- AHORA SÍ, ABRIMOS EL CONTENEDOR DEL FORMULARIO ---
+        st.divider()
+        st.subheader("📝 REGISTRO DE AUDITORÍA")
 
         df_aud_hoy, col_aud = obtener_auditorias_hoy(df_auditorias, fecha_sel, area_sel)
         piezas_validas = (
@@ -1370,7 +1771,9 @@ def main():
                 sub_list = []
             else:
                 p_sel = st.selectbox(
-                    "PIEZA", lista_desplegable, help="Piezas programadas."
+                    "PIEZA",
+                    lista_desplegable,
+                    help="¿Qué pieza estás trabajando ahorita? (Solo salen las de tu programa)",
                 )
                 if not validar_columnas(col_bdd, ["pieza", "proceso", "subproceso"]):
                     df_s = df_bdd[
@@ -1406,20 +1809,46 @@ def main():
             s_sel = st.selectbox(
                 "SUB-PROCESO",
                 sub_list if sub_list else [PIEZA_TERMINADA],
-                help="Operación a auditar.",
+                help="¿Qué paso o actividad exacta estás haciendo? (Ej. Mototool, Barrenado)",
             )
 
         with c2:
-            ops = st.number_input("OPERADORES", min_value=1, step=1, key=f"ops_{f_id}")
+            ops = st.number_input(
+                "OPERADORES",
+                min_value=1,
+                step=1,
+                key=f"ops_{f_id}",
+                help="¿Cuántas personas están trabajando físicamente en esta estación ahorita?",
+            )
             real = st.number_input(
-                "CANTIDAD REAL", min_value=0, step=1, key=f"r_{f_id}"
+                "CANTIDAD REAL",
+                min_value=0,
+                step=1,
+                key=f"r_{f_id}",
+                help="¿Cuántas piezas BUENAS llevan terminadas hasta este momento?",
             )
 
         with c3:
-            mins = st.number_input("MIN. PARO", min_value=0, step=1, key=f"m_{f_id}")
-            mot = st.selectbox("MOTIVO PARO", MOTIVOS_PARO, key=f"mot_{f_id}")
+            mins = st.number_input(
+                "MIN. PARO",
+                min_value=0,
+                step=1,
+                key=f"m_{f_id}",
+                help="Minutos que la producción estuvo detenida por causas ajenas. (OJO: Completar piezas de ayer NO es un paro, pon 0).",
+            )
+            mot = st.selectbox(
+                "MOTIVO PARO",
+                MOTIVOS_PARO,
+                key=f"mot_{f_id}",
+                help="Solo si pusiste minutos arriba. Si estás completando piezas de ayer, elige 'SIN PARO'.",
+            )
 
-        notas = st.text_input("NOTAS", key=f"n_{f_id}")
+        notas = st.text_input(
+            "NOTAS",
+            key=f"n_{f_id}",
+            help="Escribe detalles del turno. Aquí puedes justificar si no llegaste a la meta por hacer piezas atrasadas.",
+            placeholder="Ej. Faltó material / SIN PARO: Completando 50 pzs de ayer...",
+        )
 
         if s_sel and s_sel != PIEZA_TERMINADA:
             try:
@@ -1486,3 +1915,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
