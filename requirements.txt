@@ -4,3 +4,4 @@ plotly
 gspread
 oauth2client
 pytz
+streamlit-autorefresh
