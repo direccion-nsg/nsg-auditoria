@@ -308,6 +308,20 @@ def obtener_lista_areas(df_programa, columnas_programa):
     return AREAS_DEFAULT
 
 
+def obtener_areas_con_programa(df_programa, col_prog, fecha_sel):
+    """Áreas que tienen al menos una pieza programada para fecha_sel."""
+    if df_programa.empty or not col_prog.get("area") or not col_prog.get("fecha"):
+        return obtener_lista_areas(df_programa, col_prog)
+    _df_f = df_programa[df_programa[col_prog["fecha"]] == fecha_sel]
+    if _df_f.empty:
+        return obtener_lista_areas(df_programa, col_prog)
+    _areas = [
+        a for a in _df_f[col_prog["area"]].unique().tolist()
+        if a and normalizar_clave(a) != "AREA"
+    ]
+    return _areas if _areas else obtener_lista_areas(df_programa, col_prog)
+
+
 def sugerir_corte_actual():
     hora_actual = ahora_local().time()
     if hora_actual < datetime.strptime("11:30", "%H:%M").time():
@@ -5398,7 +5412,7 @@ def main():
                     )
                     fecha_sel = _fecha_dt.strftime("%d/%m/%Y")
                 with _fc2:
-                    _lista_areas = obtener_lista_areas(df_programa, col_prog)
+                    _lista_areas = obtener_areas_con_programa(df_programa, col_prog, fecha_sel)
                     _nav_a = st.session_state.get("nav_area")
                     if _nav_a and _nav_a in _lista_areas:
                         del st.session_state["nav_area"]
@@ -5422,17 +5436,16 @@ def main():
                 area_sel,
             )
 
+            _sin_programa = df_plan_dia.empty
             _cortes_info = {}
             for _ck, _ch in CORTES_DICT.items():
+                if _sin_programa:
+                    # Sin programa: auto-completo, no requiere auditoría
+                    _cortes_info[_ck] = {"horas": _ch, "pendientes": 0, "completo": True, "n_cap": 0}
+                    continue
                 _pend_c = obtener_piezas_pendientes(
-                    df_plan_dia,
-                    col_prog,
-                    df_bdd,
-                    col_bdd,
-                    df_aud_hoy,
-                    col_aud,
-                    area_sel,
-                    _ck,
+                    df_plan_dia, col_prog, df_bdd, col_bdd,
+                    df_aud_hoy, col_aud, area_sel, _ck,
                 )
                 _caps_c = (
                     df_aud_hoy[df_aud_hoy[col_aud["corte"]] == _ck]
@@ -5441,12 +5454,14 @@ def main():
                 )
                 _completo = not _caps_c.empty and len(_pend_c) == 0
                 _cortes_info[_ck] = {
-                    "horas": _ch,
-                    "pendientes": len(_pend_c),
-                    "completo": _completo,
-                    "n_cap": len(_caps_c),
+                    "horas": _ch, "pendientes": len(_pend_c),
+                    "completo": _completo, "n_cap": len(_caps_c),
                 }
-            _cortes_disp = [k for k, v in _cortes_info.items() if not v["completo"]]
+            # Secuencial: solo el primer corte incompleto disponible
+            _primer_pendiente = next(
+                (k for k, v in _cortes_info.items() if not v["completo"]), None
+            )
+            _cortes_disp = [_primer_pendiente] if _primer_pendiente else []
 
             # ── Detección de área/corte recién completada ─────────────────────
             _flag_ac = st.session_state.area_corte_completada
@@ -5559,37 +5574,14 @@ def main():
 
                 elif _cortes_disp:
                     # ── FORMULARIO ACTIVO ─────────────────────────────────────
-                    _keys_all = list(CORTES_DICT.keys())
-                    _sug_key = _keys_all[
-                        min(sugerir_corte_actual(), len(_keys_all) - 1)
-                    ]
-                    _nav_c = st.session_state.get("nav_corte")
-                    if _nav_c:
-                        del st.session_state["nav_corte"]
-                        if _nav_c in _cortes_disp:
-                            st.session_state["cap_corte"] = _nav_c
-                    _cur_corte = st.session_state.get("cap_corte")
-                    if _cur_corte and _cur_corte in _cortes_disp:
-                        _idx_disp = _cortes_disp.index(_cur_corte)
-                    elif _sug_key in _cortes_disp:
-                        _idx_disp = _cortes_disp.index(_sug_key)
-                    else:
-                        _idx_disp = len(_cortes_disp) - 1
-                    corte_sel = st.selectbox(
-                        "⏱️ CORTE",
-                        _cortes_disp,
-                        index=_idx_disp,
-                        key="cap_corte",
-                        help="Solo se muestran cortes con capturas pendientes. "
-                        "Los cortes completados se bloquean automáticamente.",
-                    )
+                    corte_sel = _cortes_disp[0]
+                    st.session_state["cap_corte"] = corte_sel
                     horas_acum = CORTES_DICT[corte_sel]
-                    if corte_sel != _sug_key:
-                        st.caption(
-                            f"⏰ Corte activo por hora: **{_sug_key}** — estás capturando un corte diferente."
-                        )
-                    else:
-                        st.caption(f"⏰ Corte activo por hora: **{_sug_key}**")
+                    st.info(
+                        f"⏱️ Corte a capturar: **{corte_sel}** "
+                        f"— completa este corte para desbloquear el siguiente.",
+                        icon=None,
+                    )
 
                     st.markdown(
                         f"<div style='background:#8B1A1A;color:white;padding:10px 18px;"
