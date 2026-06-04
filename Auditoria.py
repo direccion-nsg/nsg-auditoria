@@ -5264,9 +5264,12 @@ def main():
         page_icon="🛡️",
         initial_sidebar_state="collapsed",
     )
-    if "gspread_creds" in st.secrets:
-        with open("creds_nsg.json", "w") as f:
-            json.dump(dict(st.secrets["gspread_creds"]), f)
+    try:
+        if "gspread_creds" in st.secrets:
+            with open("creds_nsg.json", "w") as f:
+                json.dump(dict(st.secrets["gspread_creds"]), f)
+    except Exception:
+        pass  # Local: usa creds_nsg.json directamente
     st.markdown(
         """
         <style>
@@ -5359,34 +5362,6 @@ def main():
                 st.session_state.usuario = None
                 st.session_state.rol = None
                 st.rerun()
-
-    with st.expander("🔑 Cambiar mi contraseña", expanded=False):
-        with st.form("form_cambiar_pass"):
-            _cp_actual = st.text_input("Contraseña actual", type="password")
-            _cp_nueva  = st.text_input("Nueva contraseña", type="password")
-            _cp_conf   = st.text_input("Confirmar nueva contraseña", type="password")
-            if st.form_submit_button("Actualizar"):
-                if not _cp_actual or not _cp_nueva or not _cp_conf:
-                    st.error("Completa todos los campos.")
-                elif _cp_nueva != _cp_conf:
-                    st.error("La nueva contraseña y la confirmación no coinciden.")
-                else:
-                    _lista_u = _leer_usuarios()
-                    _hash_actual = hashlib.sha256(_cp_actual.encode()).hexdigest()
-                    _idx = next(
-                        (i for i, u in enumerate(_lista_u)
-                         if u["USUARIO"] == st.session_state.usuario
-                         and u["HASH"] == _hash_actual),
-                        None,
-                    )
-                    if _idx is None:
-                        st.error("La contraseña actual es incorrecta.")
-                    else:
-                        _lista_u[_idx]["HASH"] = hashlib.sha256(_cp_nueva.encode()).hexdigest()
-                        if _guardar_usuarios(_lista_u):
-                            st.success("Contraseña actualizada correctamente.")
-                        else:
-                            st.error("Error al guardar. Intenta de nuevo.")
 
     _rol = st.session_state.get("rol", "produccion")
     if _rol == "admin":
@@ -5993,6 +5968,11 @@ def main():
                     col_bdd,
                     area_sel,
                 )
+                render_capacidades(
+                    df_s if "df_s" in locals() else pd.DataFrame(),
+                    col_bdd,
+                    p_sel if "p_sel" in locals() else None,
+                )
 
             # ── Analytics: ancho completo debajo de ambas columnas ───────────
             with st.expander("📊 Ver análisis del turno", expanded=True):
@@ -6008,11 +5988,6 @@ def main():
                 render_graficos(avance_global, df_resumen_final)
                 st.divider()
                 render_estatus_detallado(df_resumen_final)
-                render_capacidades(
-                    df_s if "df_s" in locals() else pd.DataFrame(),
-                    col_bdd,
-                    p_sel if "p_sel" in locals() else None,
-                )
 
     with tab_dashboard:
         try:
@@ -6042,6 +6017,35 @@ def main():
     if _rol == "admin":
         with tab_admin:
             render_admin()
+
+    st.divider()
+    with st.expander("🔑 Cambiar mi contraseña", expanded=False):
+        with st.form("form_cambiar_pass"):
+            _cp_actual = st.text_input("Contraseña actual", type="password")
+            _cp_nueva  = st.text_input("Nueva contraseña", type="password")
+            _cp_conf   = st.text_input("Confirmar nueva contraseña", type="password")
+            if st.form_submit_button("Actualizar"):
+                if not _cp_actual or not _cp_nueva or not _cp_conf:
+                    st.error("Completa todos los campos.")
+                elif _cp_nueva != _cp_conf:
+                    st.error("La nueva contraseña y la confirmación no coinciden.")
+                else:
+                    _lista_u = _leer_usuarios()
+                    _hash_actual = hashlib.sha256(_cp_actual.encode()).hexdigest()
+                    _idx = next(
+                        (i for i, u in enumerate(_lista_u)
+                         if u["USUARIO"] == st.session_state.usuario
+                         and u["HASH"] == _hash_actual),
+                        None,
+                    )
+                    if _idx is None:
+                        st.error("La contraseña actual es incorrecta.")
+                    else:
+                        _lista_u[_idx]["HASH"] = hashlib.sha256(_cp_nueva.encode()).hexdigest()
+                        if _guardar_usuarios(_lista_u):
+                            st.success("Contraseña actualizada correctamente.")
+                        else:
+                            st.error("Error al guardar. Intenta de nuevo.")
 
 
 if __name__ == "__main__":
