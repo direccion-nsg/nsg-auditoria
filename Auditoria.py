@@ -1,7 +1,6 @@
 ﻿import calendar
 import hashlib
 import io
-import json
 import os
 import re
 import time
@@ -150,7 +149,16 @@ def convertir_serie_numerica(serie):
 
 
 @st.cache_resource
+@st.cache_resource
 def obtener_cliente():
+    try:
+        if "gspread_creds" in st.secrets:
+            _creds_dict = dict(st.secrets["gspread_creds"])
+            _creds = ServiceAccountCredentials.from_json_keyfile_dict(_creds_dict, SCOPE)
+            return gspread.authorize(_creds)
+    except Exception:
+        pass
+    # Entorno local: usa el archivo (en .gitignore, nunca al repo)
     creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_FILE, SCOPE)
     return gspread.authorize(creds)
 
@@ -5264,12 +5272,6 @@ def main():
         page_icon="🛡️",
         initial_sidebar_state="collapsed",
     )
-    try:
-        if "gspread_creds" in st.secrets:
-            with open("creds_nsg.json", "w") as f:
-                json.dump(dict(st.secrets["gspread_creds"]), f)
-    except Exception:
-        pass  # Local: usa creds_nsg.json directamente
     st.markdown(
         """
         <style>
