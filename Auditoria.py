@@ -245,6 +245,21 @@ def leer_hoja_con_reintentos(hoja, max_intentos=4, pausa_inicial=1.5):
     return []
 
 
+def _ejecutar_con_reintentos(fn, max_intentos=3, pausa_inicial=1.5):
+    """Retry con backoff exponencial para operaciones de lectura/escritura en Sheets."""
+    ultimo_error = None
+    for _intento in range(max_intentos):
+        try:
+            return fn()
+        except Exception as _exc:
+            ultimo_error = _exc
+            if not es_error_cuota(_exc) or _intento == max_intentos - 1:
+                raise
+            time.sleep(pausa_inicial * (2 ** _intento))
+    if ultimo_error:
+        raise ultimo_error
+
+
 def obtener_color_nsg(valor):
     if valor >= 85:
         return "#2ecc71"
@@ -509,10 +524,15 @@ def guardar_registro(
             hora,
             usuario,
         ]
-        libro.worksheet("AUDITAR").append_row(fila)
+        _ejecutar_con_reintentos(
+            lambda: libro.worksheet("AUDITAR").append_row(fila)
+        )
         return True
     except Exception as exc:
-        st.error(f"Error al guardar el registro: {exc}")
+        if es_error_cuota(exc):
+            st.error("⚠️ Google Sheets alcanzó su límite momentáneo. Espera 30 segundos e intenta de nuevo.")
+        else:
+            st.error(f"Error al guardar el registro: {exc}")
         return False
 
 
@@ -5118,8 +5138,11 @@ def _leer_usuarios():
     if not libro:
         return []
     try:
-        return libro.worksheet("USUARIOS").get_all_records()
-    except Exception:
+        return _ejecutar_con_reintentos(
+            lambda: libro.worksheet("USUARIOS").get_all_records()
+        )
+    except Exception as _exc:
+        st.warning(f"⚠️ No se pudo leer la lista de usuarios: {_exc}")
         return []
 
 
@@ -5129,12 +5152,14 @@ def _guardar_usuarios(lista):
         return False
     try:
         hoja = libro.worksheet("USUARIOS")
-        hoja.clear()
-        hoja.append_row(["USUARIO", "HASH", "ROL"])
-        for _u in lista:
-            hoja.append_row([_u["USUARIO"], _u["HASH"], _u["ROL"]])
+        _datos = [["USUARIO", "HASH", "ROL"]] + [
+            [_u["USUARIO"], _u["HASH"], _u["ROL"]] for _u in lista
+        ]
+        _ejecutar_con_reintentos(lambda: hoja.clear())
+        _ejecutar_con_reintentos(lambda: hoja.update("A1", _datos))
         return True
-    except Exception:
+    except Exception as _exc:
+        st.warning(f"⚠️ Error al guardar usuarios: {_exc}")
         return False
 
 
@@ -5334,6 +5359,34 @@ def main():
                 st.session_state.usuario = None
                 st.session_state.rol = None
                 st.rerun()
+
+    with st.expander("🔑 Cambiar mi contraseña", expanded=False):
+        with st.form("form_cambiar_pass"):
+            _cp_actual = st.text_input("Contraseña actual", type="password")
+            _cp_nueva  = st.text_input("Nueva contraseña", type="password")
+            _cp_conf   = st.text_input("Confirmar nueva contraseña", type="password")
+            if st.form_submit_button("Actualizar"):
+                if not _cp_actual or not _cp_nueva or not _cp_conf:
+                    st.error("Completa todos los campos.")
+                elif _cp_nueva != _cp_conf:
+                    st.error("La nueva contraseña y la confirmación no coinciden.")
+                else:
+                    _lista_u = _leer_usuarios()
+                    _hash_actual = hashlib.sha256(_cp_actual.encode()).hexdigest()
+                    _idx = next(
+                        (i for i, u in enumerate(_lista_u)
+                         if u["USUARIO"] == st.session_state.usuario
+                         and u["HASH"] == _hash_actual),
+                        None,
+                    )
+                    if _idx is None:
+                        st.error("La contraseña actual es incorrecta.")
+                    else:
+                        _lista_u[_idx]["HASH"] = hashlib.sha256(_cp_nueva.encode()).hexdigest()
+                        if _guardar_usuarios(_lista_u):
+                            st.success("Contraseña actualizada correctamente.")
+                        else:
+                            st.error("Error al guardar. Intenta de nuevo.")
 
     _rol = st.session_state.get("rol", "produccion")
     if _rol == "admin":
