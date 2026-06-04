@@ -5577,11 +5577,13 @@ def main():
                     corte_sel = _cortes_disp[0]
                     st.session_state["cap_corte"] = corte_sel
                     horas_acum = CORTES_DICT[corte_sel]
-                    st.info(
-                        f"⏱️ Corte a capturar: **{corte_sel}** "
-                        f"— completa este corte para desbloquear el siguiente.",
-                        icon=None,
+                    _es_ultimo = corte_sel == list(CORTES_DICT.keys())[-1]
+                    _msg_corte = (
+                        f"⏱️ Corte a capturar: **{corte_sel}** — último corte del turno."
+                        if _es_ultimo else
+                        f"⏱️ Corte a capturar: **{corte_sel}** — completa este corte para desbloquear el siguiente."
                     )
+                    st.info(_msg_corte, icon=None)
 
                     st.markdown(
                         f"<div style='background:#8B1A1A;color:white;padding:10px 18px;"
