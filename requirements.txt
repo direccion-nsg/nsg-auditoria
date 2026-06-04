@@ -1,7 +1,9 @@
 streamlit
 pandas
+numpy
 plotly
 gspread
 oauth2client
+openpyxl
 pytz
 
