@@ -5113,28 +5113,53 @@ def render_checklist_cobertura(
 # ============================================================
 
 
+def _leer_usuarios():
+    libro = conectar_libro()
+    if not libro:
+        return []
+    try:
+        return libro.worksheet("USUARIOS").get_all_records()
+    except Exception:
+        return []
+
+
+def _guardar_usuarios(lista):
+    libro = conectar_libro()
+    if not libro:
+        return False
+    try:
+        hoja = libro.worksheet("USUARIOS")
+        hoja.clear()
+        hoja.append_row(["USUARIO", "HASH", "ROL"])
+        for _u in lista:
+            hoja.append_row([_u["USUARIO"], _u["HASH"], _u["ROL"]])
+        return True
+    except Exception:
+        return False
+
+
 def render_admin():
     st.markdown("#### ⚙️ Gestión de Usuarios")
-    if not os.path.exists(USUARIOS_FILE):
-        st.error("Archivo usuarios.json no encontrado.")
+    _lista = _leer_usuarios()
+    if _lista is None or (not _lista and not isinstance(_lista, list)):
+        st.error("No se pudo conectar con la hoja USUARIOS.")
         return
-    with open(USUARIOS_FILE, "r", encoding="utf-8") as _f:
-        _data = json.load(_f)
 
     st.markdown("**Usuarios activos**")
-    for _i, _u in enumerate(_data["usuarios"]):
+    for _i, _u in enumerate(_lista):
         _ca, _cb, _cc = st.columns([3, 2, 1])
         with _ca:
-            st.markdown(f"👤 **{_u['usuario']}**")
+            st.markdown(f"👤 **{_u['USUARIO']}**")
         with _cb:
-            st.caption(_u["rol"])
+            st.caption(_u["ROL"])
         with _cc:
-            if _u["usuario"] != st.session_state.usuario:
-                if st.button("🗑️", key=f"del_u_{_i}", help=f"Eliminar {_u['usuario']}"):
-                    _data["usuarios"].pop(_i)
-                    with open(USUARIOS_FILE, "w", encoding="utf-8") as _fw:
-                        json.dump(_data, _fw, ensure_ascii=False, indent=2)
-                    st.success(f"Usuario '{_u['usuario']}' eliminado.")
+            if _u["USUARIO"] != st.session_state.usuario:
+                if st.button("🗑️", key=f"del_u_{_i}", help=f"Eliminar {_u['USUARIO']}"):
+                    _lista.pop(_i)
+                    if _guardar_usuarios(_lista):
+                        st.success(f"Usuario '{_u['USUARIO']}' eliminado.")
+                    else:
+                        st.error("Error al guardar cambios.")
                     st.rerun()
             else:
                 st.caption("(tú)")
@@ -5148,22 +5173,19 @@ def render_admin():
         if st.form_submit_button("Agregar", type="primary"):
             if not _nu.strip() or not _np:
                 st.error("Nombre y contraseña son obligatorios.")
-            elif any(
-                _u["usuario"].lower() == _nu.strip().lower() for _u in _data["usuarios"]
-            ):
+            elif any(_u["USUARIO"].lower() == _nu.strip().lower() for _u in _lista):
                 st.error(f"El usuario '{_nu}' ya existe.")
             else:
-                _data["usuarios"].append(
-                    {
-                        "usuario": _nu.strip(),
-                        "hash": hashlib.sha256(_np.encode()).hexdigest(),
-                        "rol": _nr,
-                    }
-                )
-                with open(USUARIOS_FILE, "w", encoding="utf-8") as _fw:
-                    json.dump(_data, _fw, ensure_ascii=False, indent=2)
-                st.success(f"Usuario '{_nu}' agregado con rol '{_nr}'.")
-                st.rerun()
+                _lista.append({
+                    "USUARIO": _nu.strip(),
+                    "HASH": hashlib.sha256(_np.encode()).hexdigest(),
+                    "ROL": _nr,
+                })
+                if _guardar_usuarios(_lista):
+                    st.success(f"Usuario '{_nu}' agregado con rol '{_nr}'.")
+                    st.rerun()
+                else:
+                    st.error("Error al guardar en Google Sheets.")
 
 
 # ============================================================
@@ -5187,23 +5209,19 @@ def render_login():
             "Contraseña", type="password", placeholder="Tu contraseña"
         )
         if st.button("Ingresar", type="primary", use_container_width=True):
-            if not os.path.exists(USUARIOS_FILE):
-                st.error("Archivo de usuarios no encontrado.")
+            _lista = _leer_usuarios()
+            if not _lista:
+                st.error("Sin conexión con la base de usuarios. Intenta de nuevo.")
                 return
-            with open(USUARIOS_FILE, "r", encoding="utf-8") as _f:
-                _data = json.load(_f)
             _hash = hashlib.sha256(_password.encode()).hexdigest()
             _match = next(
-                (
-                    u
-                    for u in _data["usuarios"]
-                    if u["usuario"].lower() == _usuario.lower() and u["hash"] == _hash
-                ),
+                (u for u in _lista
+                 if u["USUARIO"].lower() == _usuario.lower() and u["HASH"] == _hash),
                 None,
             )
             if _match:
-                st.session_state.usuario = _match["usuario"]
-                st.session_state.rol = _match["rol"]
+                st.session_state.usuario = _match["USUARIO"]
+                st.session_state.rol = _match["ROL"]
                 st.rerun()
             else:
                 st.error("Usuario o contraseña incorrectos.")
