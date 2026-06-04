@@ -1,0 +1,11 @@
+# Credenciales de Google Sheets (¡CRÍTICO!)
+creds_nsg.json
+
+# Archivo local de usuarios (para que no choque con la nube)
+usuarios.json
+
+# Archivos temporales de Python y Streamlit
+__pycache__/
+.streamlit/
+.env
+*.pyc
