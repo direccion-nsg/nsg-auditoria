@@ -59,6 +59,11 @@ MOTIVOS_PARO = [
     "FALLA MECANICA",
     "FALLA ELECTRICA",
     "FALTA DE MATERIAL",
+    "ESPERA DE PROCESO ANTERIOR",  # ← Flujo de cadena
+    "FALLA DE HERRAMENTAL / MOLDES",  # ← Ingeniería de moldes
+    "FALLA DE SERVICIOS (AIRE/GAS)",  # ← Infraestructura
+    "ESPERA DE LIBERACION / CALIDAD",  # ← Control administrativo
+    "AJUSTE OPERATIVO / PUESTA A PUNTO",  # ← Proceso térmico
     "CAMBIO DE MODELO / SET-UP",
     "AUSENCIA DE OPERADOR",
     "JUNTA DE CALIDAD / SEGURIDAD",
@@ -85,6 +90,8 @@ def obtener_version_hoja(nombre_hoja):
 def invalidar_cache_hoja(nombre_hoja):
     clave = f"version_hoja_{nombre_hoja}"
     st.session_state[clave] = st.session_state.get(clave, 0) + 1
+    # Limpia el caché global para que TODOS los usuarios vean datos frescos
+    leer_datos_seguro.clear()
 
 
 def encontrar_columna(df, aliases, contiene_todos=None):
@@ -149,12 +156,13 @@ def convertir_serie_numerica(serie):
 
 
 @st.cache_resource
-@st.cache_resource
 def obtener_cliente():
     try:
         if "gspread_creds" in st.secrets:
             _creds_dict = dict(st.secrets["gspread_creds"])
-            _creds = ServiceAccountCredentials.from_json_keyfile_dict(_creds_dict, SCOPE)
+            _creds = ServiceAccountCredentials.from_json_keyfile_dict(
+                _creds_dict, SCOPE
+            )
             return gspread.authorize(_creds)
     except Exception:
         pass
@@ -263,7 +271,7 @@ def _ejecutar_con_reintentos(fn, max_intentos=3, pausa_inicial=1.5):
             ultimo_error = _exc
             if not es_error_cuota(_exc) or _intento == max_intentos - 1:
                 raise
-            time.sleep(pausa_inicial * (2 ** _intento))
+            time.sleep(pausa_inicial * (2**_intento))
     if ultimo_error:
         raise ultimo_error
 
@@ -316,7 +324,8 @@ def obtener_areas_con_programa(df_programa, col_prog, fecha_sel):
     if _df_f.empty:
         return obtener_lista_areas(df_programa, col_prog)
     _areas = [
-        a for a in _df_f[col_prog["area"]].unique().tolist()
+        a
+        for a in _df_f[col_prog["area"]].unique().tolist()
         if a and normalizar_clave(a) != "AREA"
     ]
     return _areas if _areas else obtener_lista_areas(df_programa, col_prog)
@@ -523,36 +532,37 @@ def guardar_registro(
     notas,
     usuario,
 ):
-    libro = conectar_libro()
-    if not libro:
-        st.error("No hay conexión disponible con el libro para guardar.")
-        return False
+    hora = ahora_local().strftime("%H:%M:%S")
+    _nota_completa = f"[{mot}-{int(mins)}min]"
+    if notas.strip():
+        _nota_completa += f" {notas.strip()}"
+    fila = [
+        fecha_sel,
+        area_sel,
+        corte_sel,
+        pieza_sel,
+        subproceso_sel,
+        int(real),
+        int(meta),
+        int(real - meta),
+        int(ops),
+        _nota_completa,
+        hora,
+        usuario,
+    ]
     try:
-        hora = ahora_local().strftime("%H:%M:%S")
-        _nota_completa = f"[{mot}-{int(mins)}min]"
-        if notas.strip():
-            _nota_completa += f" {notas.strip()}"
-        fila = [
-            fecha_sel,
-            area_sel,
-            corte_sel,
-            pieza_sel,
-            subproceso_sel,
-            int(real),
-            int(meta),
-            int(real - meta),
-            int(ops),
-            _nota_completa,
-            hora,
-            usuario,
-        ]
-        _ejecutar_con_reintentos(
-            lambda: libro.worksheet("AUDITAR").append_row(fila)
-        )
+        def _escribir():
+            _libro = conectar_libro()
+            if not _libro:
+                raise RuntimeError("Sin conexión al libro")
+            _libro.worksheet("AUDITAR").append_row(fila)
+        _ejecutar_con_reintentos(_escribir, max_intentos=4, pausa_inicial=3)
         return True
     except Exception as exc:
         if es_error_cuota(exc):
-            st.error("⚠️ Google Sheets alcanzó su límite momentáneo. Espera 30 segundos e intenta de nuevo.")
+            st.error(
+                "⚠️ Google Sheets alcanzó su límite momentáneo. Espera 30 segundos e intenta de nuevo."
+            )
         else:
             st.error(f"Error al guardar el registro: {exc}")
         return False
@@ -5223,11 +5233,13 @@ def render_admin():
             elif any(_u["USUARIO"].lower() == _nu.strip().lower() for _u in _lista):
                 st.error(f"El usuario '{_nu}' ya existe.")
             else:
-                _lista.append({
-                    "USUARIO": _nu.strip(),
-                    "HASH": hashlib.sha256(_np.encode()).hexdigest(),
-                    "ROL": _nr,
-                })
+                _lista.append(
+                    {
+                        "USUARIO": _nu.strip(),
+                        "HASH": hashlib.sha256(_np.encode()).hexdigest(),
+                        "ROL": _nr,
+                    }
+                )
                 if _guardar_usuarios(_lista):
                     st.success(f"Usuario '{_nu}' agregado con rol '{_nr}'.")
                     st.rerun()
@@ -5262,8 +5274,11 @@ def render_login():
                 return
             _hash = hashlib.sha256(_password.encode()).hexdigest()
             _match = next(
-                (u for u in _lista
-                 if u["USUARIO"].lower() == _usuario.lower() and u["HASH"] == _hash),
+                (
+                    u
+                    for u in _lista
+                    if u["USUARIO"].lower() == _usuario.lower() and u["HASH"] == _hash
+                ),
                 None,
             )
             if _match:
@@ -5324,6 +5339,8 @@ def main():
 
     if "form_id" not in st.session_state:
         st.session_state.form_id = 0
+    if "guardando" not in st.session_state:
+        st.session_state.guardando = False
     if "last_ops" not in st.session_state:
         st.session_state.last_ops = 1
     if "area_corte_completada" not in st.session_state:
@@ -5412,7 +5429,9 @@ def main():
                     )
                     fecha_sel = _fecha_dt.strftime("%d/%m/%Y")
                 with _fc2:
-                    _lista_areas = obtener_areas_con_programa(df_programa, col_prog, fecha_sel)
+                    _lista_areas = obtener_areas_con_programa(
+                        df_programa, col_prog, fecha_sel
+                    )
                     _nav_a = st.session_state.get("nav_area")
                     if _nav_a and _nav_a in _lista_areas:
                         del st.session_state["nav_area"]
@@ -5441,11 +5460,22 @@ def main():
             for _ck, _ch in CORTES_DICT.items():
                 if _sin_programa:
                     # Sin programa: auto-completo, no requiere auditoría
-                    _cortes_info[_ck] = {"horas": _ch, "pendientes": 0, "completo": True, "n_cap": 0}
+                    _cortes_info[_ck] = {
+                        "horas": _ch,
+                        "pendientes": 0,
+                        "completo": True,
+                        "n_cap": 0,
+                    }
                     continue
                 _pend_c = obtener_piezas_pendientes(
-                    df_plan_dia, col_prog, df_bdd, col_bdd,
-                    df_aud_hoy, col_aud, area_sel, _ck,
+                    df_plan_dia,
+                    col_prog,
+                    df_bdd,
+                    col_bdd,
+                    df_aud_hoy,
+                    col_aud,
+                    area_sel,
+                    _ck,
                 )
                 _caps_c = (
                     df_aud_hoy[df_aud_hoy[col_aud["corte"]] == _ck]
@@ -5454,8 +5484,10 @@ def main():
                 )
                 _completo = not _caps_c.empty and len(_pend_c) == 0
                 _cortes_info[_ck] = {
-                    "horas": _ch, "pendientes": len(_pend_c),
-                    "completo": _completo, "n_cap": len(_caps_c),
+                    "horas": _ch,
+                    "pendientes": len(_pend_c),
+                    "completo": _completo,
+                    "n_cap": len(_caps_c),
                 }
             # Secuencial: solo el primer corte incompleto disponible
             _primer_pendiente = next(
@@ -5580,10 +5612,38 @@ def main():
                     _es_ultimo = corte_sel == list(CORTES_DICT.keys())[-1]
                     _msg_corte = (
                         f"⏱️ Corte a capturar: **{corte_sel}** — último corte del turno."
-                        if _es_ultimo else
-                        f"⏱️ Corte a capturar: **{corte_sel}** — completa este corte para desbloquear el siguiente."
+                        if _es_ultimo
+                        else f"⏱️ Corte a capturar: **{corte_sel}** — completa este corte para desbloquear el siguiente."
                     )
                     st.info(_msg_corte, icon=None)
+
+                    # Estado del corte: piezas pendientes con nombres
+                    _info_corte = _cortes_info.get(corte_sel, {})
+                    _n_pend_corte = _info_corte.get("pendientes", 0)
+                    _n_cap_corte = _info_corte.get("n_cap", 0)
+                    _total_piezas = (
+                        len(df_plan_dia[col_prog["pieza"]].unique())
+                        if not df_plan_dia.empty and col_prog.get("pieza")
+                        else 0
+                    )
+                    if _n_pend_corte > 0:
+                        _pend_nombres = obtener_piezas_pendientes(
+                            df_plan_dia,
+                            col_prog,
+                            df_bdd,
+                            col_bdd,
+                            df_aud_hoy,
+                            col_aud,
+                            area_sel,
+                            corte_sel,
+                        )
+                        _auditadas = _total_piezas - len(_pend_nombres)
+                        st.warning(
+                            f"**Corte {corte_sel}: {_auditadas}/{_total_piezas} piezas auditadas.**  \n"
+                            f"Pendientes: {', '.join(_pend_nombres)}.  \n"
+                            f"Captura cada pieza aunque la cantidad real sea 0.",
+                            icon="⚠️",
+                        )
 
                     st.markdown(
                         f"<div style='background:#8B1A1A;color:white;padding:10px 18px;"
@@ -5625,7 +5685,7 @@ def main():
                             f"PIEZA — {_n_pend} de {_n_total} pendiente(s)",
                             lista_desplegable,
                             key=f"p_{f_id}",
-                            help="Piezas programadas para este corte.",
+                            help="Piezas pendientes de auditar en este corte. Si el proceso estuvo detenido, captura cantidad real en 0 para registrar el paro y completar la auditoría del corte.",
                         )
                         if not validar_columnas(
                             col_bdd, ["pieza", "proceso", "subproceso"]
@@ -5683,7 +5743,7 @@ def main():
                             min_value=0,
                             step=1,
                             key=f"r_{f_id}",
-                            help="Piezas buenas producidas hasta este corte. No incluir rechazos.",
+                            help="Piezas buenas producidas hasta este corte. No incluir rechazos. Si el proceso estuvo detenido, captura 0 — es obligatorio registrar aunque no haya producción.",
                         )
                     with _ff2:
                         mins = st.number_input(
@@ -5765,21 +5825,25 @@ def main():
                                             type="primary",
                                             use_container_width=True,
                                             key=f"btn_{f_id}",
+                                            disabled=st.session_state.guardando,
                                         ):
-                                            exito = guardar_registro(
-                                                fecha_sel,
-                                                area_sel,
-                                                corte_sel,
-                                                p_sel,
-                                                s_sel,
-                                                real,
-                                                meta,
-                                                ops,
-                                                mot,
-                                                mins,
-                                                notas,
-                                                st.session_state.get("usuario", ""),
-                                            )
+                                            st.session_state.guardando = True
+                                            with st.spinner("Guardando..."):
+                                                exito = guardar_registro(
+                                                    fecha_sel,
+                                                    area_sel,
+                                                    corte_sel,
+                                                    p_sel,
+                                                    s_sel,
+                                                    real,
+                                                    meta,
+                                                    ops,
+                                                    mot,
+                                                    mins,
+                                                    notas,
+                                                    st.session_state.get("usuario", ""),
+                                                )
+                                            st.session_state.guardando = False
                                             if exito:
                                                 st.toast("✅ Guardado exitoso")
                                                 invalidar_cache_hoja("AUDITAR")
@@ -5789,7 +5853,7 @@ def main():
                                                     corte_sel,
                                                 )
                                                 st.session_state.form_id += 1
-                                                time.sleep(0.5)
+                                                time.sleep(1.5)
                                                 st.rerun()
                             else:
                                 st.warning(
@@ -6018,8 +6082,8 @@ def main():
     with st.expander("🔑 Cambiar mi contraseña", expanded=False):
         with st.form("form_cambiar_pass"):
             _cp_actual = st.text_input("Contraseña actual", type="password")
-            _cp_nueva  = st.text_input("Nueva contraseña", type="password")
-            _cp_conf   = st.text_input("Confirmar nueva contraseña", type="password")
+            _cp_nueva = st.text_input("Nueva contraseña", type="password")
+            _cp_conf = st.text_input("Confirmar nueva contraseña", type="password")
             if st.form_submit_button("Actualizar"):
                 if not _cp_actual or not _cp_nueva or not _cp_conf:
                     st.error("Completa todos los campos.")
@@ -6029,15 +6093,20 @@ def main():
                     _lista_u = _leer_usuarios()
                     _hash_actual = hashlib.sha256(_cp_actual.encode()).hexdigest()
                     _idx = next(
-                        (i for i, u in enumerate(_lista_u)
-                         if u["USUARIO"] == st.session_state.usuario
-                         and u["HASH"] == _hash_actual),
+                        (
+                            i
+                            for i, u in enumerate(_lista_u)
+                            if u["USUARIO"] == st.session_state.usuario
+                            and u["HASH"] == _hash_actual
+                        ),
                         None,
                     )
                     if _idx is None:
                         st.error("La contraseña actual es incorrecta.")
                     else:
-                        _lista_u[_idx]["HASH"] = hashlib.sha256(_cp_nueva.encode()).hexdigest()
+                        _lista_u[_idx]["HASH"] = hashlib.sha256(
+                            _cp_nueva.encode()
+                        ).hexdigest()
                         if _guardar_usuarios(_lista_u):
                             st.success("Contraseña actualizada correctamente.")
                         else:
