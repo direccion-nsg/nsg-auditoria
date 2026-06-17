@@ -2025,18 +2025,21 @@ def render_productividad(df_programa, col_prog, df_bdd, col_bdd):
         df_rrhh,
         ["ACTIVIDAD", "TAREA", "DESCRIPCION", "DESCRIPCIÓN", "OPERACION", "OPERACIÓN"],
     )
-    col_eficiencia = encontrar_columna(
-        df_rrhh,
-        [
-            "EFICIENCIA",
-            "PRODUCTIVIDAD",
-            "RENDIMIENTO",
-            "% EFICIENCIA",
-            "%EFICIENCIA",
-            "PORCENTAJE",
-            "% PRODUCTIVIDAD",
-            "%PRODUCTIVIDAD",
-        ],
+    col_eficiencia = (
+        encontrar_columna(df_rrhh, ["PRODUCTIVIDADR"])
+        or encontrar_columna(
+            df_rrhh,
+            [
+                "EFICIENCIA",
+                "PRODUCTIVIDAD",
+                "RENDIMIENTO",
+                "% EFICIENCIA",
+                "%EFICIENCIA",
+                "PORCENTAJE",
+                "% PRODUCTIVIDAD",
+                "%PRODUCTIVIDAD",
+            ],
+        )
     )
     col_pieza = encontrar_columna(
         df_rrhh, ["PIEZA", "MODELO", "PRODUCTO", "REFERENCIA", "REF", "PARTE"]
