@@ -30,6 +30,9 @@ TIMEZONE = "America/Mexico_City"
 CORTES_DICT = {"11:00 AM (3h)": 3, "14:00 PM (6h)": 6, "17:00 PM (9h)": 9}
 AREAS_DEFAULT = ["MOLDEO", "CORAZONES", "CORTE", "ENSAMBLE"]
 PIEZA_TERMINADA = "PIEZA TERMINADA"
+SUBS_HERRAJE = {"Ensamble de Pieza", "Empaque de pieza"}
+MODO_SIN_ENSAMBLE = "SIN ENSAMBLE"
+MODO_SOLO_ENSAMBLE = "SOLO ENSAMBLE"
 DIAS_ES = {
     0: "Lunes",
     1: "Martes",
@@ -136,6 +139,7 @@ def preparar_dataframe(nombre_hoja, fila_encabezado=0):
         "fecha": encontrar_columna(df, ["FECHA"]),
         "corte": encontrar_columna(df, ["CORTE"]),
         "pzxh": encontrar_columna(df, ["PZ X H", "PZXH", "PZS X H", "PZS/H"]),
+        "modo_herraje": encontrar_columna(df, ["MODO_HERRAJE", "MODO HERRAJE"]),
     }
     return df, columnas
 
@@ -143,6 +147,15 @@ def preparar_dataframe(nombre_hoja, fila_encabezado=0):
 def validar_columnas(columnas, requeridas):
     faltantes = [nombre for nombre in requeridas if not columnas.get(nombre)]
     return faltantes
+
+
+def filtrar_subs_por_modo(subs, modo):
+    modo = str(modo).strip().upper()
+    if modo == MODO_SIN_ENSAMBLE:
+        return [s for s in subs if s not in SUBS_HERRAJE]
+    if modo == MODO_SOLO_ENSAMBLE:
+        return [s for s in subs if s in SUBS_HERRAJE]
+    return list(subs)
 
 
 def convertir_serie_numerica(serie):
@@ -506,7 +519,12 @@ def obtener_piezas_pendientes(
         mask = (df_bdd[col_bdd["pieza"]] == pieza) & (
             df_bdd[col_bdd["proceso"]] == area_sel
         )
-        subs_totales = df_bdd[mask][col_bdd["subproceso"]].unique()
+        subs_totales = df_bdd[mask][col_bdd["subproceso"]].unique().tolist()
+        if col_prog.get("modo_herraje") and not df_plan_dia.empty:
+            _mask_p = df_plan_dia[col_prog["pieza"]] == pieza
+            _m = df_plan_dia.loc[_mask_p, col_prog["modo_herraje"]]
+            _modo = str(_m.iloc[0]).strip() if not _m.empty else ""
+            subs_totales = filtrar_subs_por_modo(subs_totales, _modo)
         reps_pieza = []
         if not df_aud_hoy.empty and col_aud.get("corte") and col_aud.get("pieza"):
             reps_pieza = df_aud_hoy[
@@ -5713,15 +5731,17 @@ def main():
                                 (df_aud_hoy[col_aud["corte"]] == corte_sel)
                                 & (df_aud_hoy[col_aud["pieza"]] == p_sel)
                             ][col_aud["subproceso"]].tolist()
-                        sub_list = (
-                            [
-                                s
-                                for s in df_s[col_bdd["subproceso"]].unique()
-                                if s not in reps
-                            ]
+                        _subs_bdd = (
+                            df_s[col_bdd["subproceso"]].unique().tolist()
                             if not df_s.empty
                             else []
                         )
+                        if col_prog.get("modo_herraje") and not df_plan_dia.empty:
+                            _mask_pm = df_plan_dia[col_prog["pieza"]] == p_sel
+                            _m_pm = df_plan_dia.loc[_mask_pm, col_prog["modo_herraje"]]
+                            _modo_pm = str(_m_pm.iloc[0]).strip() if not _m_pm.empty else ""
+                            _subs_bdd = filtrar_subs_por_modo(_subs_bdd, _modo_pm)
+                        sub_list = [s for s in _subs_bdd if s not in reps]
                         if reps:
                             st.caption(
                                 f"Ya capturados en {corte_sel}: {', '.join(reps)}"
