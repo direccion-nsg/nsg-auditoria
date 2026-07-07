@@ -766,22 +766,31 @@ def obtener_datos_unificados(
         .max()
         .reset_index()
     )
+    _cols_merge = [
+        col_prog["fecha"],
+        col_prog["area"],
+        col_prog["pieza"],
+        col_prog["total"],
+        "FECHA_DT",
+    ]
+    if col_prog.get("modo_herraje") and col_prog["modo_herraje"] in df_p_final.columns:
+        _cols_merge.append(col_prog["modo_herraje"])
     df_base_v = pd.merge(
-        df_p_final[
-            [
-                col_prog["fecha"],
-                col_prog["area"],
-                col_prog["pieza"],
-                col_prog["total"],
-                "FECHA_DT",
-            ]
-        ],
+        df_p_final[_cols_merge],
         df_bdd[[col_bdd["pieza"], col_bdd["subproceso"], col_bdd["proceso"]]],
         left_on=col_prog["pieza"],
         right_on=col_bdd["pieza"],
         how="inner",
     )
     df_base_v = df_base_v[df_base_v[col_prog["area"]] == df_base_v[col_bdd["proceso"]]]
+    if col_prog.get("modo_herraje") and col_prog["modo_herraje"] in df_base_v.columns:
+        _mask_ens = df_base_v[col_prog["area"]].str.upper() == "ENSAMBLE"
+        _modo_v = df_base_v[col_prog["modo_herraje"]].fillna("").astype(str).str.strip().str.upper()
+        _excluir_v = (
+            (_mask_ens & (_modo_v == MODO_SIN_ENSAMBLE) & df_base_v[col_bdd["subproceso"]].isin(SUBS_HERRAJE))
+            | (_mask_ens & (_modo_v == MODO_SOLO_ENSAMBLE) & ~df_base_v[col_bdd["subproceso"]].isin(SUBS_HERRAJE))
+        )
+        df_base_v = df_base_v[~_excluir_v]
     df_uni = pd.merge(
         df_base_v,
         df_max_a,
