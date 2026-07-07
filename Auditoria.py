@@ -5352,6 +5352,8 @@ def main():
         st.session_state.nav_area = None
     if "nav_corte" not in st.session_state:
         st.session_state.nav_corte = None
+    if "confirmar_sobre_programa" not in st.session_state:
+        st.session_state.confirmar_sobre_programa = False
 
     df_programa, col_prog = preparar_dataframe("PROGRAMA", 1)
     df_bdd_raw, col_bdd = preparar_dataframe("BDD", 0)
@@ -5822,42 +5824,89 @@ def main():
                                         st.warning(
                                             "Captura una nota cuando el motivo sea OTRO."
                                         )
+                                    # ── Validación: real > total programado ──────────
+                                    _total_prog = 0
+                                    if (
+                                        not df_plan_dia.empty
+                                        and col_prog.get("pieza")
+                                        and col_prog.get("total")
+                                    ):
+                                        _mask_prog = df_plan_dia[col_prog["pieza"]] == p_sel
+                                        _vals_prog = df_plan_dia.loc[_mask_prog, col_prog["total"]]
+                                        if not _vals_prog.empty:
+                                            _total_prog = _vals_prog.sum()
+                                    _alerta_prog = _total_prog > 0 and real > _total_prog
+                                    _pct_prog = round(real / _total_prog * 100) if _total_prog > 0 else 0
+                                    if not _alerta_prog:
+                                        st.session_state.confirmar_sobre_programa = False
+
                                     if not _bloqueo_real and not _bloqueo_mot:
-                                        if st.button(
-                                            "💾 GUARDAR REGISTRO",
-                                            type="primary",
-                                            use_container_width=True,
-                                            key=f"btn_{f_id}",
-                                            disabled=st.session_state.guardando,
+                                        if (
+                                            _alerta_prog
+                                            and not st.session_state.confirmar_sobre_programa
                                         ):
-                                            st.session_state.guardando = True
-                                            with st.spinner("Guardando..."):
-                                                exito = guardar_registro(
-                                                    fecha_sel,
-                                                    area_sel,
-                                                    corte_sel,
-                                                    p_sel,
-                                                    s_sel,
-                                                    real,
-                                                    meta,
-                                                    ops,
-                                                    mot,
-                                                    mins,
-                                                    notas,
-                                                    st.session_state.get("usuario", ""),
-                                                )
-                                            st.session_state.guardando = False
-                                            if exito:
-                                                st.toast("✅ Guardado exitoso")
-                                                invalidar_cache_hoja("AUDITAR")
-                                                st.session_state.last_ops = ops
-                                                st.session_state.area_corte_completada = (
-                                                    area_sel,
-                                                    corte_sel,
-                                                )
-                                                st.session_state.form_id += 1
-                                                time.sleep(1.5)
-                                                st.rerun()
+                                            st.warning(
+                                                f"⚠️ **¿Estás seguro?** Estás capturando "
+                                                f"**{real} pzas** de **{p_sel}** — {s_sel}.  \n"
+                                                f"El programa de hoy para **{p_sel}** es de "
+                                                f"**{int(_total_prog)} pzas** "
+                                                f"(llevarías **{_pct_prog}%** del programa).  \n"
+                                                f"Si es correcto, confirma para guardar."
+                                            )
+                                            _ca, _cb = st.columns(2)
+                                            with _ca:
+                                                if st.button(
+                                                    "✅ Sí, guardar así",
+                                                    use_container_width=True,
+                                                    type="primary",
+                                                    key=f"conf_si_{f_id}",
+                                                ):
+                                                    st.session_state.confirmar_sobre_programa = True
+                                                    st.rerun()
+                                            with _cb:
+                                                if st.button(
+                                                    "❌ Cancelar",
+                                                    use_container_width=True,
+                                                    key=f"conf_no_{f_id}",
+                                                ):
+                                                    pass
+                                        else:
+                                            if st.button(
+                                                "💾 GUARDAR REGISTRO",
+                                                type="primary",
+                                                use_container_width=True,
+                                                key=f"btn_{f_id}",
+                                                disabled=st.session_state.guardando,
+                                            ):
+                                                st.session_state.guardando = True
+                                                with st.spinner("Guardando..."):
+                                                    exito = guardar_registro(
+                                                        fecha_sel,
+                                                        area_sel,
+                                                        corte_sel,
+                                                        p_sel,
+                                                        s_sel,
+                                                        real,
+                                                        meta,
+                                                        ops,
+                                                        mot,
+                                                        mins,
+                                                        notas,
+                                                        st.session_state.get("usuario", ""),
+                                                    )
+                                                st.session_state.guardando = False
+                                                if exito:
+                                                    st.toast("✅ Guardado exitoso")
+                                                    invalidar_cache_hoja("AUDITAR")
+                                                    st.session_state.last_ops = ops
+                                                    st.session_state.area_corte_completada = (
+                                                        area_sel,
+                                                        corte_sel,
+                                                    )
+                                                    st.session_state.confirmar_sobre_programa = False
+                                                    st.session_state.form_id += 1
+                                                    time.sleep(1.5)
+                                                    st.rerun()
                             else:
                                 st.warning(
                                     "No hay datos de capacidad para este subproceso."
