@@ -416,6 +416,21 @@ def calcular_resumen(
     df_base[col_prog["total"]] = convertir_serie_numerica(
         df_base[col_prog["total"]]
     ).fillna(0)
+    if col_prog.get("modo_herraje") and not df_plan_dia.empty:
+        _modo_map = (
+            df_plan_dia.drop_duplicates(subset=[col_prog["pieza"]])
+            .set_index(col_prog["pieza"])[col_prog["modo_herraje"]]
+            .to_dict()
+        )
+        _modo_col = df_base[col_bdd["pieza"]].map(_modo_map).fillna("").str.strip().str.upper()
+        _es_herraje = df_base[col_bdd["subproceso"]].isin(SUBS_HERRAJE)
+        _excluir = (
+            ((_modo_col == MODO_SIN_ENSAMBLE) & _es_herraje)
+            | ((_modo_col == MODO_SOLO_ENSAMBLE) & ~_es_herraje)
+        )
+        df_base = df_base[~_excluir].copy()
+    if df_base.empty:
+        return avance_global, df_resumen
     if not df_auditorias.empty:
         col_aud = {
             "fecha": encontrar_columna(df_auditorias, ["FECHA"]),
