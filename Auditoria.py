@@ -5394,6 +5394,10 @@ def main():
         st.session_state.nav_corte = None
     if "confirmar_sobre_programa" not in st.session_state:
         st.session_state.confirmar_sobre_programa = False
+    if "capturas_sesion" not in st.session_state:
+        st.session_state.capturas_sesion = 0
+    if "ultimo_guardado" not in st.session_state:
+        st.session_state.ultimo_guardado = None
 
     df_programa, col_prog = preparar_dataframe("PROGRAMA", 1)
     df_bdd_raw, col_bdd = preparar_dataframe("BDD", 0)
@@ -5718,6 +5722,14 @@ def main():
                     )
                     f_id = st.session_state.form_id
 
+                    if st.session_state.get("ultimo_guardado"):
+                        _ug = st.session_state.ultimo_guardado
+                        st.success(
+                            f"✅ **Último guardado:** {_ug['pieza']} · {_ug['sub']} · "
+                            f"{_ug['real']} pzas  |  "
+                            f"**{st.session_state.capturas_sesion} guardado(s) esta sesión**"
+                        )
+
                     if not lista_desplegable:
                         st.warning("No hay piezas disponibles para auditar.")
                         p_sel = None
@@ -5939,6 +5951,12 @@ def main():
                                                 st.session_state.guardando = False
                                                 if exito:
                                                     st.toast("✅ Guardado exitoso")
+                                                    st.session_state.capturas_sesion += 1
+                                                    st.session_state.ultimo_guardado = {
+                                                        "pieza": p_sel,
+                                                        "sub": s_sel,
+                                                        "real": real,
+                                                    }
                                                     invalidar_cache_hoja("AUDITAR")
                                                     st.session_state.last_ops = ops
                                                     st.session_state.area_corte_completada = (
@@ -5947,7 +5965,7 @@ def main():
                                                     )
                                                     st.session_state.confirmar_sobre_programa = False
                                                     st.session_state.form_id += 1
-                                                    time.sleep(1.5)
+                                                    time.sleep(0.3)
                                                     st.rerun()
                             else:
                                 st.warning(
