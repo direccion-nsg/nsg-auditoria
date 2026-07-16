@@ -93,8 +93,6 @@ def obtener_version_hoja(nombre_hoja):
 def invalidar_cache_hoja(nombre_hoja):
     clave = f"version_hoja_{nombre_hoja}"
     st.session_state[clave] = st.session_state.get(clave, 0) + 1
-    # Limpia el caché global para que TODOS los usuarios vean datos frescos
-    leer_datos_seguro.clear()
 
 
 def encontrar_columna(df, aliases, contiene_todos=None):
