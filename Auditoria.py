@@ -252,6 +252,18 @@ def es_error_cuota(exc):
     return "429" in mensaje or "Read requests per minute per user" in mensaje
 
 
+def es_error_transiente(exc):
+    msg = str(exc).lower()
+    return (
+        es_error_cuota(exc)
+        or "sin conexión" in msg
+        or "connection" in msg
+        or "timeout" in msg
+        or "ssl" in msg
+        or "transport" in msg
+    )
+
+
 def leer_hoja_con_reintentos(hoja, max_intentos=4, pausa_inicial=1.5):
     ultimo_error = None
     for intento in range(max_intentos):
@@ -273,15 +285,17 @@ def leer_hoja_con_reintentos(hoja, max_intentos=4, pausa_inicial=1.5):
 
 
 def _ejecutar_con_reintentos(fn, max_intentos=3, pausa_inicial=1.5):
-    """Retry con backoff exponencial para operaciones de lectura/escritura en Sheets."""
+    """Retry con backoff exponencial para errores de cuota o conexión."""
     ultimo_error = None
     for _intento in range(max_intentos):
         try:
             return fn()
         except Exception as _exc:
             ultimo_error = _exc
-            if not es_error_cuota(_exc) or _intento == max_intentos - 1:
+            if not es_error_transiente(_exc) or _intento == max_intentos - 1:
                 raise
+            if not es_error_cuota(_exc):
+                obtener_cliente.clear()
             time.sleep(pausa_inicial * (2**_intento))
     if ultimo_error:
         raise ultimo_error
@@ -593,6 +607,11 @@ def guardar_registro(
         if es_error_cuota(exc):
             st.error(
                 "⚠️ Google Sheets alcanzó su límite momentáneo. Espera 30 segundos e intenta de nuevo."
+            )
+        elif es_error_transiente(exc):
+            st.error(
+                "📶 Sin conexión a Google Sheets. Verifica tu señal WiFi y presiona "
+                "**GUARDAR REGISTRO** de nuevo — los datos del formulario siguen aquí."
             )
         else:
             st.error(f"Error al guardar el registro: {exc}")
