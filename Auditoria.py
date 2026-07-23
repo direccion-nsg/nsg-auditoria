@@ -285,17 +285,16 @@ def leer_hoja_con_reintentos(hoja, max_intentos=4, pausa_inicial=1.5):
 
 
 def _ejecutar_con_reintentos(fn, max_intentos=3, pausa_inicial=1.5):
-    """Retry con backoff exponencial para errores de cuota o conexión."""
+    """Retry con backoff exponencial — solo para errores de cuota (429).
+    Errores de conexión NO se reintentan en escrituras para evitar duplicados."""
     ultimo_error = None
     for _intento in range(max_intentos):
         try:
             return fn()
         except Exception as _exc:
             ultimo_error = _exc
-            if not es_error_transiente(_exc) or _intento == max_intentos - 1:
+            if not es_error_cuota(_exc) or _intento == max_intentos - 1:
                 raise
-            if not es_error_cuota(_exc):
-                obtener_cliente.clear()
             time.sleep(pausa_inicial * (2**_intento))
     if ultimo_error:
         raise ultimo_error
@@ -5417,6 +5416,8 @@ def main():
         st.session_state.capturas_sesion = 0
     if "ultimo_guardado" not in st.session_state:
         st.session_state.ultimo_guardado = None
+    if "capturas_locales" not in st.session_state:
+        st.session_state.capturas_locales = []
 
     df_programa, col_prog = preparar_dataframe("PROGRAMA", 1)
     df_bdd_raw, col_bdd = preparar_dataframe("BDD", 0)
@@ -5784,6 +5785,16 @@ def main():
                                 (df_aud_hoy[col_aud["corte"]] == corte_sel)
                                 & (df_aud_hoy[col_aud["pieza"]] == p_sel)
                             ][col_aud["subproceso"]].tolist()
+                        _fecha_str = fecha_sel.strftime("%d/%m/%Y")
+                        for _cap in st.session_state.get("capturas_locales", []):
+                            if (
+                                _cap["fecha"] == _fecha_str
+                                and _cap["area"] == area_sel
+                                and _cap["corte"] == corte_sel
+                                and _cap["pieza"] == p_sel
+                                and _cap["sub"] not in reps
+                            ):
+                                reps.append(_cap["sub"])
                         _subs_bdd = (
                             df_s[col_bdd["subproceso"]].unique().tolist()
                             if not df_s.empty
@@ -5976,6 +5987,13 @@ def main():
                                                         "sub": s_sel,
                                                         "real": real,
                                                     }
+                                                    st.session_state.capturas_locales.append({
+                                                        "fecha": fecha_sel.strftime("%d/%m/%Y"),
+                                                        "area": area_sel,
+                                                        "corte": corte_sel,
+                                                        "pieza": p_sel,
+                                                        "sub": s_sel,
+                                                    })
                                                     invalidar_cache_hoja("AUDITAR")
                                                     st.session_state.last_ops = ops
                                                     st.session_state.area_corte_completada = (
