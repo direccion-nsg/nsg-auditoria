@@ -5785,7 +5785,7 @@ def main():
                                 (df_aud_hoy[col_aud["corte"]] == corte_sel)
                                 & (df_aud_hoy[col_aud["pieza"]] == p_sel)
                             ][col_aud["subproceso"]].tolist()
-                        _fecha_str = fecha_sel.strftime("%d/%m/%Y")
+                        _fecha_str = fecha_sel.strftime("%d/%m/%Y") if hasattr(fecha_sel, "strftime") else str(fecha_sel)
                         for _cap in st.session_state.get("capturas_locales", []):
                             if (
                                 _cap["fecha"] == _fecha_str
