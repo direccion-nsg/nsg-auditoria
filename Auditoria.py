@@ -5988,7 +5988,7 @@ def main():
                                                         "real": real,
                                                     }
                                                     st.session_state.capturas_locales.append({
-                                                        "fecha": fecha_sel.strftime("%d/%m/%Y"),
+                                                        "fecha": fecha_sel.strftime("%d/%m/%Y") if hasattr(fecha_sel, "strftime") else str(fecha_sel),
                                                         "area": area_sel,
                                                         "corte": corte_sel,
                                                         "pieza": p_sel,
