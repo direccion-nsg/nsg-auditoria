@@ -119,8 +119,8 @@ def preparar_dataframe(nombre_hoja, fila_encabezado=0):
         df = leer_datos_seguro(
             nombre_hoja, fila_encabezado, obtener_version_hoja(nombre_hoja)
         )
-    except RuntimeError as exc:
-        st.warning(f"⚠️ {exc}")
+    except Exception as exc:
+        st.warning(f"⚠️ No se pudo cargar '{nombre_hoja}': {type(exc).__name__}. Usando datos en caché o vacío.")
         df = pd.DataFrame()
     columnas = {
         "pieza": encontrar_columna(df, ["PIEZA"]),
@@ -261,6 +261,11 @@ def es_error_transiente(exc):
         or "timeout" in msg
         or "ssl" in msg
         or "transport" in msg
+        or "500" in msg
+        or "503" in msg
+        or "502" in msg
+        or "internal server error" in msg
+        or "service unavailable" in msg
     )
 
 
@@ -269,14 +274,9 @@ def leer_hoja_con_reintentos(hoja, max_intentos=4, pausa_inicial=1.5):
     for intento in range(max_intentos):
         try:
             return hoja.get_all_values()
-        except APIError as exc:
-            ultimo_error = exc
-            if not es_error_cuota(exc) or intento == max_intentos - 1:
-                raise
-            time.sleep(pausa_inicial * (2**intento))
         except Exception as exc:
             ultimo_error = exc
-            if not es_error_cuota(exc) or intento == max_intentos - 1:
+            if not es_error_transiente(exc) or intento == max_intentos - 1:
                 raise
             time.sleep(pausa_inicial * (2**intento))
     if ultimo_error:
