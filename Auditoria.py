@@ -557,7 +557,28 @@ def obtener_piezas_pendientes(
                 (df_aud_hoy[col_aud["corte"]] == corte_sel)
                 & (df_aud_hoy[col_aud["pieza"]] == pieza)
             ][col_aud["subproceso"]].tolist()
-        if any(sub for sub in subs_totales if sub not in reps_pieza):
+        subs_completados_hoy = set()
+        if (
+            not df_aud_hoy.empty
+            and col_aud.get("real")
+            and col_aud.get("pieza")
+            and col_aud.get("subproceso")
+            and col_prog.get("total")
+        ):
+            _total_prog_vals = df_plan_dia.loc[
+                df_plan_dia[col_prog["pieza"]] == pieza, col_prog["total"]
+            ]
+            _total_prog = convertir_serie_numerica(_total_prog_vals).sum() if not _total_prog_vals.empty else 0
+            if _total_prog > 0:
+                _aud_pieza = df_aud_hoy[df_aud_hoy[col_aud["pieza"]] == pieza]
+                for _sub in subs_totales:
+                    _reales = convertir_serie_numerica(
+                        _aud_pieza.loc[_aud_pieza[col_aud["subproceso"]] == _sub, col_aud["real"]]
+                    )
+                    if not _reales.empty and _reales.max() >= _total_prog:
+                        subs_completados_hoy.add(_sub)
+        subs_cubiertos = set(reps_pieza) | subs_completados_hoy
+        if any(sub for sub in subs_totales if sub not in subs_cubiertos):
             piezas_pendientes.append(pieza)
     return piezas_pendientes
 
@@ -5795,6 +5816,28 @@ def main():
                                 and _cap["sub"] not in reps
                             ):
                                 reps.append(_cap["sub"])
+                        if (
+                            not df_aud_hoy.empty
+                            and col_aud.get("real")
+                            and col_aud.get("pieza")
+                            and col_aud.get("subproceso")
+                            and col_prog.get("total")
+                            and not df_plan_dia.empty
+                        ):
+                            _tp_vals = df_plan_dia.loc[
+                                df_plan_dia[col_prog["pieza"]] == p_sel, col_prog["total"]
+                            ]
+                            _tp = convertir_serie_numerica(_tp_vals).sum() if not _tp_vals.empty else 0
+                            if _tp > 0:
+                                _aud_p = df_aud_hoy[df_aud_hoy[col_aud["pieza"]] == p_sel]
+                                _subs_forma = df_s[col_bdd["subproceso"]].unique().tolist() if not df_s.empty else []
+                                for _sub_c in _subs_forma:
+                                    if _sub_c not in reps:
+                                        _rv = convertir_serie_numerica(
+                                            _aud_p.loc[_aud_p[col_aud["subproceso"]] == _sub_c, col_aud["real"]]
+                                        )
+                                        if not _rv.empty and _rv.max() >= _tp:
+                                            reps.append(_sub_c)
                         _subs_bdd = (
                             df_s[col_bdd["subproceso"]].unique().tolist()
                             if not df_s.empty
