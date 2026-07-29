@@ -6023,7 +6023,10 @@ def main():
                                                     )
                                                 st.session_state.guardando = False
                                                 if exito:
-                                                    st.toast("✅ Guardado exitoso")
+                                                    if _total_prog > 0 and real >= _total_prog:
+                                                        st.toast(f"🎯 ¡Programación completada! {p_sel} · {s_sel}")
+                                                    else:
+                                                        st.toast("✅ Guardado exitoso")
                                                     st.session_state.capturas_sesion += 1
                                                     st.session_state.ultimo_guardado = {
                                                         "pieza": p_sel,
