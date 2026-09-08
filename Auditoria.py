@@ -5306,11 +5306,14 @@ def render_admin():
     st.divider()
     st.markdown("**Agregar usuario**")
     with st.form("form_nuevo_usuario"):
-        _nu = st.text_input("Nombre de usuario")
-        _np = st.text_input("Contraseña", type="password")
+        _nu = st.text_input("Nombre de usuario", key="admin_nuevo_usuario")
+        _np = st.text_input(
+            "Contraseña", type="password", key="admin_nueva_contrasena"
+        )
         _nr = st.selectbox(
             "Rol",
             ["auditor", "supervisora", "coordinadora", "produccion", "admin"],
+            key="admin_nuevo_rol",
         )
         if st.form_submit_button("Agregar", type="primary"):
             if not _nu.strip() or not _np:
@@ -5327,6 +5330,9 @@ def render_admin():
                 )
                 if _guardar_usuarios(_lista):
                     st.success(f"Usuario '{_nu}' agregado con rol '{_nr}'.")
+                    del st.session_state["admin_nuevo_usuario"]
+                    del st.session_state["admin_nueva_contrasena"]
+                    del st.session_state["admin_nuevo_rol"]
                     st.rerun()
                 else:
                     st.error("Error al guardar en Google Sheets.")
