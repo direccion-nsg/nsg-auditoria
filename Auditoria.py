@@ -5308,7 +5308,10 @@ def render_admin():
     with st.form("form_nuevo_usuario"):
         _nu = st.text_input("Nombre de usuario")
         _np = st.text_input("Contraseña", type="password")
-        _nr = st.selectbox("Rol", ["auditor", "produccion", "admin"])
+        _nr = st.selectbox(
+            "Rol",
+            ["auditor", "supervisora", "coordinadora", "produccion", "admin"],
+        )
         if st.form_submit_button("Agregar", type="primary"):
             if not _nu.strip() or not _np:
                 st.error("Nombre y contraseña son obligatorios.")
@@ -5496,7 +5499,7 @@ def main():
                 "⚙️ ADMINISTRACIÓN",
             ]
         )
-    elif _rol != "produccion":
+    elif _rol not in ("produccion", "coordinadora"):
         tab_captura, tab_dashboard, tab_productividad = st.tabs(
             ["📦 CAPTURA Y AUDITORIA", "📊 VER RESULTADOS", "📈 PRODUCTIVIDAD"]
         )
@@ -5505,7 +5508,7 @@ def main():
             ["📊 VER RESULTADOS", "📈 PRODUCTIVIDAD"]
         )
 
-    if _rol != "produccion":
+    if _rol not in ("produccion", "coordinadora"):
         with tab_captura:
             # ── Columnas: Captura (izq 55%) | Referencias (der 45%) ─────────
             _col_form, _col_ref = st.columns([11, 9])
