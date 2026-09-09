@@ -763,10 +763,11 @@ def _fmt_horas_min(horas):
     return f"{_h} h {_m} min"
 
 
-def _auto_balancear_operadores(subs, personal_disponible):
+def _auto_balancear_operadores(subs, personal_disponible, eficiencia=100):
     _asignacion = {_s["subproceso"]: 0 for _s in subs}
     if not subs or personal_disponible <= 0:
         return _asignacion
+    _factor = eficiencia / 100
     _restante = int(personal_disponible)
     for _s in subs:
         if _restante <= 0:
@@ -774,7 +775,9 @@ def _auto_balancear_operadores(subs, personal_disponible):
         _asignacion[_s["subproceso"]] = 1
         _restante -= 1
     while _restante > 0:
-        _peor = min(subs, key=lambda s: s["pzxh"] * _asignacion[s["subproceso"]])
+        _peor = min(
+            subs, key=lambda s: s["pzxh"] * _asignacion[s["subproceso"]] * _factor
+        )
         _asignacion[_peor["subproceso"]] += 1
         _restante -= 1
     return _asignacion
@@ -783,6 +786,12 @@ def _auto_balancear_operadores(subs, personal_disponible):
 def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_turno):
     st.markdown(f"**{titulo}**")
     pieza_sel = st.selectbox("Pieza", piezas, key=f"{key_prefix}_pieza")
+    eficiencia = st.select_slider(
+        "Eficiencia Operativa (%)",
+        options=[100, 95, 90, 85, 80, 75, 70],
+        value=85,
+        key=f"{key_prefix}_eficiencia",
+    )
     cantidad = st.number_input(
         "Cantidad a producir",
         min_value=0,
@@ -830,12 +839,23 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
         st.info(f"'{pieza_sel}' no tiene subprocesos de Corte/Ensamble en la BDD.")
         return None
 
+    # Pre-lectura de los checkboxes "completado" (antes de redibujarlos) para
+    # saber qué subprocesos siguen activos y poder balancear/resaltar en el
+    # mismo loop, igual que ya se hace con los operadores.
+    _completado = {
+        _s["subproceso"]: st.session_state.get(
+            f"{key_prefix}_done_{_s['subproceso']}", False
+        )
+        for _s in _subs
+    }
+    _subs_activos = [_s for _s in _subs if not _completado[_s["subproceso"]]]
+
     _c_pers, _c_btn = st.columns([2, 2])
     with _c_pers:
         _personal_disp = st.number_input(
             "Personal disponible",
             min_value=0,
-            value=len(_subs),
+            value=len(_subs_activos),
             step=1,
             key=f"{key_prefix}_personal_disponible",
         )
@@ -845,7 +865,9 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
             "⚡ Auto-balancear Línea", key=f"{key_prefix}_auto_balance_btn"
         )
     if _auto_click:
-        _asignacion = _auto_balancear_operadores(_subs, int(_personal_disp))
+        _asignacion = _auto_balancear_operadores(
+            _subs_activos, int(_personal_disp), eficiencia
+        )
         for _nombre_sub, _ops_asig in _asignacion.items():
             st.session_state[f"{key_prefix}_ops_{_nombre_sub}"] = _ops_asig
         st.rerun()
@@ -854,34 +876,70 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
     # script (por el botón de auto-balanceo o por una interacción previa), así
     # que se puede leer aquí (antes de redibujar los number_input) para saber
     # el cuello de botella y resaltar su fila en el mismo loop.
-    _capacidades = {
-        _s["subproceso"]: _s["pzxh"]
-        * st.session_state.get(f"{key_prefix}_ops_{_s['subproceso']}", 1)
+    _ops_actuales = {
+        _s["subproceso"]: st.session_state.get(
+            f"{key_prefix}_ops_{_s['subproceso']}", 1
+        )
         for _s in _subs
     }
-    _nombre_cuello = min(_capacidades, key=_capacidades.get)
-    _capacidad_cuello = _capacidades[_nombre_cuello]
-    _pos_cuello = next(
-        i for i, _s in enumerate(_subs) if _s["subproceso"] == _nombre_cuello
-    )
+    _cap_optima = {
+        _s["subproceso"]: _s["pzxh"] * _ops_actuales[_s["subproceso"]] for _s in _subs
+    }
+    _cap_proyectada = {
+        _sub: _cap * (eficiencia / 100) for _sub, _cap in _cap_optima.items()
+    }
 
-    _e1, _e2, _e3, _e4, _e5 = st.columns([3, 2, 2, 2, 2])
+    _total_ops_corte = sum(
+        _ops_actuales[_s["subproceso"]] for _s in _subs if _s["area"] == "CORTE"
+    )
+    _total_ops_ensamble = sum(
+        _ops_actuales[_s["subproceso"]] for _s in _subs if _s["area"] == "ENSAMBLE"
+    )
+    _kc1, _kc2 = st.columns(2)
+    _kc1.metric("Operadores en CORTE", int(_total_ops_corte))
+    _kc2.metric("Operadores en ENSAMBLE", int(_total_ops_ensamble))
+
+    _nombre_cuello = None
+    _capacidad_cuello = None
+    _pos_cuello = None
+    if _subs_activos:
+        _nombre_cuello = min(
+            _subs_activos, key=lambda s: _cap_proyectada[s["subproceso"]]
+        )["subproceso"]
+        _capacidad_cuello = _cap_proyectada[_nombre_cuello]
+        _pos_cuello = next(
+            i
+            for i, _s in enumerate(_subs_activos)
+            if _s["subproceso"] == _nombre_cuello
+        )
+
+    _anchos = [3, 1.6, 1.6, 1.8, 1.8, 1.7, 1.3]
+    _e1, _e2, _e3, _e4, _e5, _e6, _e7 = st.columns(_anchos)
     _e1.caption("SUBPROCESO")
     _e2.caption("PZXH ESTÁNDAR")
     _e3.caption("OPERADORES")
-    _e4.caption("CAPACIDAD")
-    _e5.caption(f"TIEMPO ({int(cantidad)} pzs)")
+    _e4.caption("CAP. ÓPTIMA (100%)")
+    _e5.caption(f"CAP. PROYECTADA ({eficiencia}%)")
+    _e6.caption(f"TIEMPO ({int(cantidad)} pzs)")
+    _e7.caption("COMPLETADO")
     for _s in _subs:
-        _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 2, 2, 2])
-        _es_cuello = _s["subproceso"] == _nombre_cuello
+        _c1, _c2, _c3, _c4, _c5, _c6, _c7 = st.columns(_anchos)
+        _sub_nombre = _s["subproceso"]
+        _es_completado = _completado[_sub_nombre]
+        _es_cuello = _sub_nombre == _nombre_cuello
         with _c1:
             if _es_cuello:
                 st.markdown(
-                    f"<span style='color:#e74c3c;font-weight:700;'>⚠️ {_s['area']} · {_s['subproceso']}</span>",
+                    f"<span style='color:#e74c3c;font-weight:700;'>⚠️ {_s['area']} · {_sub_nombre}</span>",
+                    unsafe_allow_html=True,
+                )
+            elif _es_completado:
+                st.markdown(
+                    f"<span style='color:#aaa;text-decoration:line-through;'>✅ {_s['area']} · {_sub_nombre}</span>",
                     unsafe_allow_html=True,
                 )
             else:
-                st.markdown(f"{_s['area']} · {_s['subproceso']}")
+                st.markdown(f"{_s['area']} · {_sub_nombre}")
         with _c2:
             st.caption(f"{_s['pzxh']:.1f} pz/h · op")
         with _c3:
@@ -890,30 +948,45 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
                 min_value=0,
                 value=1,
                 step=1,
-                key=f"{key_prefix}_ops_{_s['subproceso']}",
+                key=f"{key_prefix}_ops_{_sub_nombre}",
                 label_visibility="collapsed",
             )
-        _cap_fila = _s["pzxh"] * _ops
+        _cap_optima_fila = _s["pzxh"] * _ops
+        _cap_proyectada_fila = _cap_optima_fila * (eficiencia / 100)
         with _c4:
-            st.caption(f"{_cap_fila:.0f} pz/h")
+            st.caption(f"{_cap_optima_fila:.0f} pz/h")
         with _c5:
-            _tiempo_fila = (
-                cantidad / _cap_fila if _cap_fila > 0 and cantidad > 0 else None
-            )
+            st.caption(f"{_cap_proyectada_fila:.0f} pz/h")
+        with _c6:
+            _tiempo_fila = None
+            if not _es_completado and _cap_proyectada_fila > 0 and cantidad > 0:
+                _tiempo_fila = cantidad / _cap_proyectada_fila
             st.caption(_fmt_horas_min(_tiempo_fila))
+        with _c7:
+            st.checkbox(
+                "Completado",
+                value=_es_completado,
+                key=f"{key_prefix}_done_{_sub_nombre}",
+                label_visibility="collapsed",
+            )
 
     tiempo_horas = None
     t_arranque_horas = 0.0
     _motivo_no_factible = None
-    if cantidad <= 0:
+    if not _subs_activos:
+        _motivo_no_factible = (
+            "Todos los subprocesos de Corte/Ensamble están marcados como "
+            "completados — no queda producción pendiente en esta línea."
+        )
+    elif cantidad <= 0:
         _motivo_no_factible = "Captura una cantidad mayor a 0 para estimar el tiempo."
     elif _capacidad_cuello <= 0:
         _motivo_no_factible = (
             f"Sin operadores en <b>{_nombre_cuello}</b> — la línea no puede producir."
         )
     else:
-        for _s in _subs[:_pos_cuello]:
-            _cap_prev = _capacidades[_s["subproceso"]]
+        for _s in _subs_activos[:_pos_cuello]:
+            _cap_prev = _cap_proyectada[_s["subproceso"]]
             if _cap_prev <= 0:
                 _motivo_no_factible = (
                     f"Sin operadores en <b>{_s['subproceso']}</b> — no se puede "
@@ -925,10 +998,12 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
             tiempo_horas = t_arranque_horas + cantidad / _capacidad_cuello
 
     if tiempo_horas is None:
+        _color_msg = "#27ae60" if not _subs_activos else "#e74c3c"
+        _icono_msg = "✅" if not _subs_activos else "⚠️"
         st.markdown(
-            "<div style='background:white;border-left:6px solid #e74c3c;padding:14px 20px;"
+            f"<div style='background:white;border-left:6px solid {_color_msg};padding:14px 20px;"
             "border-radius:10px;margin:8px 0;box-shadow:0 2px 8px rgba(0,0,0,0.06);'>"
-            f"⚠️ {_motivo_no_factible}</div>",
+            f"{_icono_msg} {_motivo_no_factible}</div>",
             unsafe_allow_html=True,
         )
     else:
@@ -944,7 +1019,7 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
             f"<div style='background:white;border-left:6px solid {_color};padding:14px 20px;"
             "border-radius:10px;margin:8px 0;box-shadow:0 2px 8px rgba(0,0,0,0.06);'>"
             f"<div>Cuello de botella: <b>{_nombre_cuello}</b></div>"
-            f"<div>Capacidad de línea: <b>{_capacidad_cuello:.0f} pz/h</b></div>"
+            f"<div>Capacidad de línea (proyectada {eficiencia}%): <b>{_capacidad_cuello:.0f} pz/h</b></div>"
             f"<div style='color:{_color};font-weight:900;font-size:22px;'>{_fmt_horas_min(tiempo_horas)}</div>"
             f"<div style='color:#888;font-size:12px;margin-top:4px;'>"
             f"Incluye {_arranque_min} min de arranque (lote de transferencia de "
@@ -957,6 +1032,7 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
         "pieza": pieza_sel,
         "cantidad": cantidad,
         "lote": lote,
+        "eficiencia": eficiencia,
         "cuello": _nombre_cuello,
         "capacidad": _capacidad_cuello,
         "tiempo_horas": tiempo_horas,
