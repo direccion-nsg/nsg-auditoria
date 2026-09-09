@@ -785,73 +785,74 @@ def _auto_balancear_operadores(subs, personal_disponible, eficiencia=100):
 
 def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_turno):
     st.markdown(f"**{titulo}**")
-    pieza_sel = st.selectbox("Pieza", piezas, key=f"{key_prefix}_pieza")
-    eficiencia = st.select_slider(
-        "Eficiencia Operativa (%)",
-        options=[100, 95, 90, 85, 80, 75, 70],
-        value=85,
-        key=f"{key_prefix}_eficiencia",
-    )
-    cantidad = st.number_input(
-        "Cantidad a producir",
-        min_value=0,
-        value=100,
-        step=100,
-        key=f"{key_prefix}_cantidad",
-    )
-    lote = st.number_input(
-        "Lote de transferencia (pzs)",
-        min_value=1,
-        value=25,
-        step=5,
-        key=f"{key_prefix}_lote",
-    )
 
-    _df_s = df_bdd[
-        (df_bdd[col_bdd["pieza"]].astype(str).str.strip() == pieza_sel)
-        & (
-            df_bdd[col_bdd["proceso"]]
-            .astype(str)
-            .str.strip()
-            .str.upper()
-            .isin(["CORTE", "ENSAMBLE"])
+    with st.container(border=True):
+        st.markdown("🛠️ **Parámetros de Célula**")
+        pieza_sel = st.selectbox("Pieza", piezas, key=f"{key_prefix}_pieza")
+        eficiencia = st.select_slider(
+            "Eficiencia Operativa (%)",
+            options=[100, 95, 90, 85, 80, 75, 70],
+            value=85,
+            key=f"{key_prefix}_eficiencia",
         )
-    ]
+        cantidad = st.number_input(
+            "Cantidad a producir",
+            min_value=0,
+            value=100,
+            step=100,
+            key=f"{key_prefix}_cantidad",
+        )
+        lote = st.number_input(
+            "Lote de transferencia (pzs)",
+            min_value=1,
+            value=25,
+            step=5,
+            key=f"{key_prefix}_lote",
+        )
 
-    _subs = []
-    _vistos = set()
-    for _area in ("CORTE", "ENSAMBLE"):
-        _df_area = _df_s[
-            _df_s[col_bdd["proceso"]].astype(str).str.strip().str.upper() == _area
+        _df_s = df_bdd[
+            (df_bdd[col_bdd["pieza"]].astype(str).str.strip() == pieza_sel)
+            & (
+                df_bdd[col_bdd["proceso"]]
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .isin(["CORTE", "ENSAMBLE"])
+            )
         ]
-        for _, _r in _df_area.iterrows():
-            _sub = str(_r[col_bdd["subproceso"]]).strip()
-            if not _sub or _sub in _vistos:
-                continue
-            _vistos.add(_sub)
-            try:
-                _pzxh = float(_r[col_bdd["pzxh"]])
-            except (TypeError, ValueError):
-                _pzxh = 0.0
-            _subs.append({"area": _area, "subproceso": _sub, "pzxh": _pzxh})
 
-    if not _subs:
-        st.info(f"'{pieza_sel}' no tiene subprocesos de Corte/Ensamble en la BDD.")
-        return None
+        _subs = []
+        _vistos = set()
+        for _area in ("CORTE", "ENSAMBLE"):
+            _df_area = _df_s[
+                _df_s[col_bdd["proceso"]].astype(str).str.strip().str.upper() == _area
+            ]
+            for _, _r in _df_area.iterrows():
+                _sub = str(_r[col_bdd["subproceso"]]).strip()
+                if not _sub or _sub in _vistos:
+                    continue
+                _vistos.add(_sub)
+                try:
+                    _pzxh = float(_r[col_bdd["pzxh"]])
+                except (TypeError, ValueError):
+                    _pzxh = 0.0
+                _subs.append({"area": _area, "subproceso": _sub, "pzxh": _pzxh})
 
-    # Pre-lectura de los checkboxes "completado" (antes de redibujarlos) para
-    # saber qué subprocesos siguen activos y poder balancear/resaltar en el
-    # mismo loop, igual que ya se hace con los operadores.
-    _completado = {
-        _s["subproceso"]: st.session_state.get(
-            f"{key_prefix}_done_{_s['subproceso']}", False
-        )
-        for _s in _subs
-    }
-    _subs_activos = [_s for _s in _subs if not _completado[_s["subproceso"]]]
+        if not _subs:
+            st.info(f"'{pieza_sel}' no tiene subprocesos de Corte/Ensamble en la BDD.")
+            return None
 
-    _c_pers, _c_btn = st.columns([2, 2])
-    with _c_pers:
+        # Pre-lectura de los checkboxes "completado" (antes de redibujarlos) para
+        # saber qué subprocesos siguen activos y poder balancear/resaltar en el
+        # mismo loop, igual que ya se hace con los operadores.
+        _completado = {
+            _s["subproceso"]: st.session_state.get(
+                f"{key_prefix}_done_{_s['subproceso']}", False
+            )
+            for _s in _subs
+        }
+        _subs_activos = [_s for _s in _subs if not _completado[_s["subproceso"]]]
+
         _personal_disp = st.number_input(
             "Personal disponible",
             min_value=0,
@@ -859,18 +860,6 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
             step=1,
             key=f"{key_prefix}_personal_disponible",
         )
-    with _c_btn:
-        st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
-        _auto_click = st.button(
-            "⚡ Auto-balancear Línea", key=f"{key_prefix}_auto_balance_btn"
-        )
-    if _auto_click:
-        _asignacion = _auto_balancear_operadores(
-            _subs_activos, int(_personal_disp), eficiencia
-        )
-        for _nombre_sub, _ops_asig in _asignacion.items():
-            st.session_state[f"{key_prefix}_ops_{_nombre_sub}"] = _ops_asig
-        st.rerun()
 
     # Streamlit ya deja el valor nuevo en session_state antes de re-ejecutar el
     # script (por el botón de auto-balanceo o por una interacción previa), así
@@ -895,9 +884,25 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
     _total_ops_ensamble = sum(
         _ops_actuales[_s["subproceso"]] for _s in _subs if _s["area"] == "ENSAMBLE"
     )
-    _kc1, _kc2 = st.columns(2)
-    _kc1.metric("Operadores en CORTE", int(_total_ops_corte))
-    _kc2.metric("Operadores en ENSAMBLE", int(_total_ops_ensamble))
+
+    with st.container(border=True):
+        _kc1, _kc2, _kc3 = st.columns([1, 1, 1.4])
+        _kc1.metric("Operadores en CORTE", int(_total_ops_corte))
+        _kc2.metric("Operadores en ENSAMBLE", int(_total_ops_ensamble))
+        with _kc3:
+            st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+            _auto_click = st.button(
+                "⚡ Auto-balancear Línea",
+                key=f"{key_prefix}_auto_balance_btn",
+                use_container_width=True,
+            )
+    if _auto_click:
+        _asignacion = _auto_balancear_operadores(
+            _subs_activos, int(_personal_disp), eficiencia
+        )
+        for _nombre_sub, _ops_asig in _asignacion.items():
+            st.session_state[f"{key_prefix}_ops_{_nombre_sub}"] = _ops_asig
+        st.rerun()
 
     _nombre_cuello = None
     _capacidad_cuello = None
@@ -922,7 +927,12 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
     _e5.caption(f"CAP. PROYECTADA ({eficiencia}%)")
     _e6.caption(f"TIEMPO ({int(cantidad)} pzs)")
     _e7.caption("COMPLETADO")
+    _ensamble_mostrado = False
     for _s in _subs:
+        if _s["area"] == "ENSAMBLE" and not _ensamble_mostrado:
+            st.markdown("###### 🧵 ENSAMBLE")
+            st.divider()
+            _ensamble_mostrado = True
         _c1, _c2, _c3, _c4, _c5, _c6, _c7 = st.columns(_anchos)
         _sub_nombre = _s["subproceso"]
         _es_completado = _completado[_sub_nombre]
@@ -1041,7 +1051,6 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
 
 
 def render_balanceador_lineas(df_bdd, col_bdd):
-    st.divider()
     st.subheader("⚖️ Balanceador de Líneas (Corte + Ensamble)")
     st.caption(
         "Asigna operadores por subproceso y estima el tiempo para completar una "
@@ -5087,6 +5096,7 @@ Usa el historial completo de **todos los operadores** (incluyendo ex-activos) pa
                 return f"{_p[0].title()} {_p[1][0].upper()}."
             return _p[0].title() if _p else nombre_completo
 
+    def _tarjeta_buscador_cobertura():
         # ── Buscador de Cobertura ─────────────────────────────────────────
         st.subheader("🆘 Buscador de Cobertura")
         st.caption("¿Quién puede cubrir una posición ausente en el turno de hoy?")
@@ -5188,8 +5198,7 @@ Usa el historial completo de **todos los operadores** (incluyendo ex-activos) pa
                         unsafe_allow_html=True,
                     )
 
-        st.divider()
-
+    def _tarjeta_alineacion_sugerida():
         # ── Alineación Sugerida del Día ───────────────────────────────────
         st.subheader("📅 Alineación Sugerida del Día")
         st.caption(
@@ -5346,8 +5355,15 @@ Usa el historial completo de **todos los operadores** (incluyendo ex-activos) pa
                         "No se generaron filas de alineación — verifica que las piezas del programa coincidan con la BDD."
                     )
 
-        st.divider()
-        render_balanceador_lineas(df_bdd, col_bdd)
+    with tab_planeacion:
+        with st.container(border=True):
+            _tarjeta_buscador_cobertura()
+
+        with st.container(border=True):
+            _tarjeta_alineacion_sugerida()
+
+        with st.container(border=True):
+            render_balanceador_lineas(df_bdd, col_bdd)
 
 
 # ============================================================
