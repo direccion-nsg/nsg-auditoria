@@ -755,6 +755,31 @@ def render_capacidades(df_s, col_bdd, pieza_sel):
             st.warning("Selecciona una pieza válida para ver sus capacidades.")
 
 
+def _fmt_horas_min(horas):
+    if horas is None:
+        return "—"
+    _total_min = round(horas * 60)
+    _h, _m = divmod(_total_min, 60)
+    return f"{_h} h {_m} min"
+
+
+def _auto_balancear_operadores(subs, personal_disponible):
+    _asignacion = {_s["subproceso"]: 0 for _s in subs}
+    if not subs or personal_disponible <= 0:
+        return _asignacion
+    _restante = int(personal_disponible)
+    for _s in subs:
+        if _restante <= 0:
+            break
+        _asignacion[_s["subproceso"]] = 1
+        _restante -= 1
+    while _restante > 0:
+        _peor = min(subs, key=lambda s: s["pzxh"] * _asignacion[s["subproceso"]])
+        _asignacion[_peor["subproceso"]] += 1
+        _restante -= 1
+    return _asignacion
+
+
 def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_turno):
     st.markdown(f"**{titulo}**")
     pieza_sel = st.selectbox("Pieza", piezas, key=f"{key_prefix}_pieza")
@@ -764,6 +789,13 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
         value=100,
         step=100,
         key=f"{key_prefix}_cantidad",
+    )
+    lote = st.number_input(
+        "Lote de transferencia (pzs)",
+        min_value=1,
+        value=25,
+        step=5,
+        key=f"{key_prefix}_lote",
     )
 
     _df_s = df_bdd[
@@ -798,9 +830,29 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
         st.info(f"'{pieza_sel}' no tiene subprocesos de Corte/Ensamble en la BDD.")
         return None
 
+    _c_pers, _c_btn = st.columns([2, 2])
+    with _c_pers:
+        _personal_disp = st.number_input(
+            "Personal disponible",
+            min_value=0,
+            value=len(_subs),
+            step=1,
+            key=f"{key_prefix}_personal_disponible",
+        )
+    with _c_btn:
+        st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+        _auto_click = st.button(
+            "⚡ Auto-balancear Línea", key=f"{key_prefix}_auto_balance_btn"
+        )
+    if _auto_click:
+        _asignacion = _auto_balancear_operadores(_subs, int(_personal_disp))
+        for _nombre_sub, _ops_asig in _asignacion.items():
+            st.session_state[f"{key_prefix}_ops_{_nombre_sub}"] = _ops_asig
+
     # Streamlit ya deja el valor nuevo en session_state antes de re-ejecutar el
-    # script, así que se puede leer aquí (antes de redibujar los number_input)
-    # para saber el cuello de botella y resaltar su fila en el mismo loop.
+    # script (por el botón de auto-balanceo o por una interacción previa), así
+    # que se puede leer aquí (antes de redibujar los number_input) para saber
+    # el cuello de botella y resaltar su fila en el mismo loop.
     _capacidades = {
         _s["subproceso"]: _s["pzxh"]
         * st.session_state.get(f"{key_prefix}_ops_{_s['subproceso']}", 1)
@@ -808,14 +860,18 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
     }
     _nombre_cuello = min(_capacidades, key=_capacidades.get)
     _capacidad_cuello = _capacidades[_nombre_cuello]
+    _pos_cuello = next(
+        i for i, _s in enumerate(_subs) if _s["subproceso"] == _nombre_cuello
+    )
 
-    _e1, _e2, _e3, _e4 = st.columns([3, 2, 2, 2])
+    _e1, _e2, _e3, _e4, _e5 = st.columns([3, 2, 2, 2, 2])
     _e1.caption("SUBPROCESO")
     _e2.caption("PZXH ESTÁNDAR")
     _e3.caption("OPERADORES")
     _e4.caption("CAPACIDAD")
+    _e5.caption(f"TIEMPO ({int(cantidad)} pzs)")
     for _s in _subs:
-        _c1, _c2, _c3, _c4 = st.columns([3, 2, 2, 2])
+        _c1, _c2, _c3, _c4, _c5 = st.columns([3, 2, 2, 2, 2])
         _es_cuello = _s["subproceso"] == _nombre_cuello
         with _c1:
             if _es_cuello:
@@ -836,23 +892,42 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
                 key=f"{key_prefix}_ops_{_s['subproceso']}",
                 label_visibility="collapsed",
             )
+        _cap_fila = _s["pzxh"] * _ops
         with _c4:
-            st.caption(f"{_s['pzxh'] * _ops:.0f} pz/h")
+            st.caption(f"{_cap_fila:.0f} pz/h")
+        with _c5:
+            _tiempo_fila = (
+                cantidad / _cap_fila if _cap_fila > 0 and cantidad > 0 else None
+            )
+            st.caption(_fmt_horas_min(_tiempo_fila))
 
     tiempo_horas = None
-    if _capacidad_cuello > 0 and cantidad > 0:
-        tiempo_horas = cantidad / _capacidad_cuello
+    t_arranque_horas = 0.0
+    _motivo_no_factible = None
+    if cantidad <= 0:
+        _motivo_no_factible = "Captura una cantidad mayor a 0 para estimar el tiempo."
+    elif _capacidad_cuello <= 0:
+        _motivo_no_factible = (
+            f"Sin operadores en <b>{_nombre_cuello}</b> — la línea no puede producir."
+        )
+    else:
+        for _s in _subs[:_pos_cuello]:
+            _cap_prev = _capacidades[_s["subproceso"]]
+            if _cap_prev <= 0:
+                _motivo_no_factible = (
+                    f"Sin operadores en <b>{_s['subproceso']}</b> — no se puede "
+                    "alimentar la línea hasta el cuello de botella."
+                )
+                break
+            t_arranque_horas += lote / _cap_prev
+        if _motivo_no_factible is None:
+            tiempo_horas = t_arranque_horas + cantidad / _capacidad_cuello
 
     if tiempo_horas is None:
-        _msg = (
-            f"Sin operadores en <b>{_nombre_cuello}</b> — la línea no puede producir."
-            if _capacidad_cuello <= 0
-            else "Captura una cantidad mayor a 0 para estimar el tiempo."
-        )
         st.markdown(
             "<div style='background:white;border-left:6px solid #e74c3c;padding:14px 20px;"
             "border-radius:10px;margin:8px 0;box-shadow:0 2px 8px rgba(0,0,0,0.06);'>"
-            f"⚠️ {_msg}</div>",
+            f"⚠️ {_motivo_no_factible}</div>",
             unsafe_allow_html=True,
         )
     else:
@@ -863,14 +938,16 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
             _color = "#f39c12"
         else:
             _color = "#e74c3c"
-        _h = int(tiempo_horas)
-        _m = int(round((tiempo_horas - _h) * 60))
+        _arranque_min = round(t_arranque_horas * 60)
         st.markdown(
             f"<div style='background:white;border-left:6px solid {_color};padding:14px 20px;"
             "border-radius:10px;margin:8px 0;box-shadow:0 2px 8px rgba(0,0,0,0.06);'>"
             f"<div>Cuello de botella: <b>{_nombre_cuello}</b></div>"
             f"<div>Capacidad de línea: <b>{_capacidad_cuello:.0f} pz/h</b></div>"
-            f"<div style='color:{_color};font-weight:900;font-size:22px;'>{_h} h {_m} min</div>"
+            f"<div style='color:{_color};font-weight:900;font-size:22px;'>{_fmt_horas_min(tiempo_horas)}</div>"
+            f"<div style='color:#888;font-size:12px;margin-top:4px;'>"
+            f"Incluye {_arranque_min} min de arranque (lote de transferencia de "
+            f"{int(lote)} pzs recorriendo las {_pos_cuello} etapa(s) previas al cuello de botella)</div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -878,9 +955,11 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
     return {
         "pieza": pieza_sel,
         "cantidad": cantidad,
+        "lote": lote,
         "cuello": _nombre_cuello,
         "capacidad": _capacidad_cuello,
         "tiempo_horas": tiempo_horas,
+        "t_arranque_horas": t_arranque_horas,
     }
 
 
