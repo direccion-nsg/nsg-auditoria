@@ -755,6 +755,184 @@ def render_capacidades(df_s, col_bdd, pieza_sel):
             st.warning("Selecciona una pieza válida para ver sus capacidades.")
 
 
+def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_turno):
+    st.markdown(f"**{titulo}**")
+    pieza_sel = st.selectbox("Pieza", piezas, key=f"{key_prefix}_pieza")
+    cantidad = st.number_input(
+        "Cantidad a producir",
+        min_value=0,
+        value=100,
+        step=100,
+        key=f"{key_prefix}_cantidad",
+    )
+
+    _df_s = df_bdd[
+        (df_bdd[col_bdd["pieza"]].astype(str).str.strip() == pieza_sel)
+        & (
+            df_bdd[col_bdd["proceso"]]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .isin(["CORTE", "ENSAMBLE"])
+        )
+    ]
+
+    _subs = []
+    _vistos = set()
+    for _area in ("CORTE", "ENSAMBLE"):
+        _df_area = _df_s[
+            _df_s[col_bdd["proceso"]].astype(str).str.strip().str.upper() == _area
+        ]
+        for _, _r in _df_area.iterrows():
+            _sub = str(_r[col_bdd["subproceso"]]).strip()
+            if not _sub or _sub in _vistos:
+                continue
+            _vistos.add(_sub)
+            try:
+                _pzxh = float(_r[col_bdd["pzxh"]])
+            except (TypeError, ValueError):
+                _pzxh = 0.0
+            _subs.append({"area": _area, "subproceso": _sub, "pzxh": _pzxh})
+
+    if not _subs:
+        st.info(f"'{pieza_sel}' no tiene subprocesos de Corte/Ensamble en la BDD.")
+        return None
+
+    # Streamlit ya deja el valor nuevo en session_state antes de re-ejecutar el
+    # script, así que se puede leer aquí (antes de redibujar los number_input)
+    # para saber el cuello de botella y resaltar su fila en el mismo loop.
+    _capacidades = {
+        _s["subproceso"]: _s["pzxh"]
+        * st.session_state.get(f"{key_prefix}_ops_{_s['subproceso']}", 1)
+        for _s in _subs
+    }
+    _nombre_cuello = min(_capacidades, key=_capacidades.get)
+    _capacidad_cuello = _capacidades[_nombre_cuello]
+
+    _e1, _e2, _e3, _e4 = st.columns([3, 2, 2, 2])
+    _e1.caption("SUBPROCESO")
+    _e2.caption("PZXH ESTÁNDAR")
+    _e3.caption("OPERADORES")
+    _e4.caption("CAPACIDAD")
+    for _s in _subs:
+        _c1, _c2, _c3, _c4 = st.columns([3, 2, 2, 2])
+        _es_cuello = _s["subproceso"] == _nombre_cuello
+        with _c1:
+            if _es_cuello:
+                st.markdown(
+                    f"<span style='color:#e74c3c;font-weight:700;'>⚠️ {_s['area']} · {_s['subproceso']}</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(f"{_s['area']} · {_s['subproceso']}")
+        with _c2:
+            st.caption(f"{_s['pzxh']:.1f} pz/h · op")
+        with _c3:
+            _ops = st.number_input(
+                "Operadores",
+                min_value=0,
+                value=1,
+                step=1,
+                key=f"{key_prefix}_ops_{_s['subproceso']}",
+                label_visibility="collapsed",
+            )
+        with _c4:
+            st.caption(f"{_s['pzxh'] * _ops:.0f} pz/h")
+
+    tiempo_horas = None
+    if _capacidad_cuello > 0 and cantidad > 0:
+        tiempo_horas = cantidad / _capacidad_cuello
+
+    if tiempo_horas is None:
+        _msg = (
+            f"Sin operadores en <b>{_nombre_cuello}</b> — la línea no puede producir."
+            if _capacidad_cuello <= 0
+            else "Captura una cantidad mayor a 0 para estimar el tiempo."
+        )
+        st.markdown(
+            "<div style='background:white;border-left:6px solid #e74c3c;padding:14px 20px;"
+            "border-radius:10px;margin:8px 0;box-shadow:0 2px 8px rgba(0,0,0,0.06);'>"
+            f"⚠️ {_msg}</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        _pct = tiempo_horas / horas_turno if horas_turno > 0 else 0
+        if _pct <= 0.85:
+            _color = "#27ae60"
+        elif _pct <= 1.0:
+            _color = "#f39c12"
+        else:
+            _color = "#e74c3c"
+        _h = int(tiempo_horas)
+        _m = int(round((tiempo_horas - _h) * 60))
+        st.markdown(
+            f"<div style='background:white;border-left:6px solid {_color};padding:14px 20px;"
+            "border-radius:10px;margin:8px 0;box-shadow:0 2px 8px rgba(0,0,0,0.06);'>"
+            f"<div>Cuello de botella: <b>{_nombre_cuello}</b></div>"
+            f"<div>Capacidad de línea: <b>{_capacidad_cuello:.0f} pz/h</b></div>"
+            f"<div style='color:{_color};font-weight:900;font-size:22px;'>{_h} h {_m} min</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    return {
+        "pieza": pieza_sel,
+        "cantidad": cantidad,
+        "cuello": _nombre_cuello,
+        "capacidad": _capacidad_cuello,
+        "tiempo_horas": tiempo_horas,
+    }
+
+
+def render_balanceador_lineas(df_bdd, col_bdd):
+    st.divider()
+    st.subheader("⚖️ Balanceador de Líneas (Corte + Ensamble)")
+    st.caption(
+        "Asigna operadores por subproceso y estima el tiempo para completar una "
+        "cantidad, según el cuello de botella de la línea."
+    )
+
+    _cols_req = ["pieza", "proceso", "subproceso", "pzxh"]
+    if df_bdd.empty or any(not col_bdd.get(k) for k in _cols_req):
+        st.warning(
+            "Faltan columnas de la BDD (pieza, área/proceso, subproceso o PZ x H) "
+            "para usar el balanceador."
+        )
+        return
+
+    _piezas = sorted(df_bdd[col_bdd["pieza"]].astype(str).str.strip().unique().tolist())
+    if not _piezas:
+        st.info("No hay piezas disponibles en la BDD.")
+        return
+
+    _horas_turno = st.number_input(
+        "Horas de turno disponibles",
+        min_value=0.5,
+        value=9.0,
+        step=0.5,
+        key="balance_horas_turno",
+    )
+
+    _dos_celulas = st.checkbox(
+        "Comparar con una segunda célula", key="balance_2_celulas"
+    )
+
+    if _dos_celulas:
+        _col1, _col2 = st.columns(2)
+        with _col1:
+            _bloque_celula_balance(
+                df_bdd, col_bdd, _piezas, "c1", "Célula 1", _horas_turno
+            )
+        with _col2:
+            _bloque_celula_balance(
+                df_bdd, col_bdd, _piezas, "c2", "Célula 2", _horas_turno
+            )
+    else:
+        _bloque_celula_balance(
+            df_bdd, col_bdd, _piezas, "c1", "Balance de línea", _horas_turno
+        )
+
+
 def obtener_datos_unificados(
     df_auditorias, df_programa, df_bdd, col_prog, col_bdd, f_ini, f_fin
 ):
@@ -5011,6 +5189,9 @@ Usa el historial completo de **todos los operadores** (incluyendo ex-activos) pa
                     st.info(
                         "No se generaron filas de alineación — verifica que las piezas del programa coincidan con la BDD."
                     )
+
+        st.divider()
+        render_balanceador_lineas(df_bdd, col_bdd)
 
 
 # ============================================================
