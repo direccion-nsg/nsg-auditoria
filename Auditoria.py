@@ -848,6 +848,7 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
         _asignacion = _auto_balancear_operadores(_subs, int(_personal_disp))
         for _nombre_sub, _ops_asig in _asignacion.items():
             st.session_state[f"{key_prefix}_ops_{_nombre_sub}"] = _ops_asig
+        st.rerun()
 
     # Streamlit ya deja el valor nuevo en session_state antes de re-ejecutar el
     # script (por el botón de auto-balanceo o por una interacción previa), así
