@@ -763,6 +763,73 @@ def _fmt_horas_min(horas):
     return f"{_h} h {_m} min"
 
 
+def _texto_persona(n):
+    _n = int(n)
+    return "1 persona" if _n == 1 else f"{_n} personas"
+
+
+def _construir_mensaje_whatsapp(resultados):
+    _marcas_celula = ["🔴", "🔵"]
+    _iconos_area = {"CORTE": "✂️", "ENSAMBLE": "🧵"}
+    _bloques = []
+    for _i, _r in enumerate(resultados):
+        if not _r or not _r.get("filas_mensaje"):
+            continue
+        _marca = _marcas_celula[_i % len(_marcas_celula)]
+        _lineas = [
+            f"{_marca} *{_r['titulo'].upper()}* – Pieza {_r['pieza']} "
+            f"({int(_r['cantidad'])} pzas)",
+            "",
+        ]
+        _area_actual = None
+        _total_personal = 0
+        for _f in _r["filas_mensaje"]:
+            if _f["area"] != _area_actual:
+                _area_actual = _f["area"]
+                if _lineas[-1] != "":
+                    _lineas.append("")
+                _lineas.append(
+                    f"{_iconos_area.get(_area_actual, '⚙️')} {_area_actual}"
+                )
+            _marca_fila = "⚠️" if _f["es_cuello"] else "👷"
+            _sufijo = (
+                " (aquí se hace lento, si sobra alguien ponlo aquí)"
+                if _f["es_cuello"]
+                else ""
+            )
+            _lineas.append(
+                f"{_marca_fila} {_f['subproceso']} — {_texto_persona(_f['ops'])}{_sufijo}"
+            )
+            _total_personal += _f["ops"]
+        _lineas.append("")
+        if _r["tiempo_horas"] is not None:
+            _tot_min = round(_r["tiempo_horas"] * 60)
+            _h_msg, _m_msg = divmod(_tot_min, 60)
+            _tiempo_txt = f"{_m_msg} min" if _h_msg == 0 else f"{_h_msg} h {_m_msg} min"
+        else:
+            _tiempo_txt = "no se pudo calcular"
+        _lineas.append(f"⏱️ Tiempo estimado: ~{_tiempo_txt}")
+        _lineas.append(f"👥 Total: {_texto_persona(_total_personal)}")
+        _bloques.append("\n".join(_lineas))
+
+    if not _bloques:
+        return ""
+
+    _separador = "\n\n" + "━" * 16 + "\n\n"
+    _cierre = ""
+    if len(_bloques) > 1:
+        _cierre += (
+            "\n\n💡 Si una célula termina antes, manda a esa gente a apoyar "
+            "los procesos ⚠️ de la otra célula."
+        )
+    _cierre += "\n\n✅ Cualquier duda, avisar al supervisor."
+    return (
+        "📋 *SUGERENCIA DE ACOMODO DE HOY*\n\n"
+        + _separador.join(_bloques)
+        + _cierre
+    )
+
+
 def _auto_balancear_operadores(subs, personal_disponible, eficiencia=100):
     _asignacion = {_s["subproceso"]: 0 for _s in subs}
     if not subs or personal_disponible <= 0:
@@ -1039,6 +1106,7 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
         )
 
     return {
+        "titulo": titulo,
         "pieza": pieza_sel,
         "cantidad": cantidad,
         "lote": lote,
@@ -1047,6 +1115,15 @@ def _bloque_celula_balance(df_bdd, col_bdd, piezas, key_prefix, titulo, horas_tu
         "capacidad": _capacidad_cuello,
         "tiempo_horas": tiempo_horas,
         "t_arranque_horas": t_arranque_horas,
+        "filas_mensaje": [
+            {
+                "area": _s["area"],
+                "subproceso": _s["subproceso"],
+                "ops": _ops_actuales[_s["subproceso"]],
+                "es_cuello": _s["subproceso"] == _nombre_cuello,
+            }
+            for _s in _subs_activos
+        ],
     }
 
 
@@ -1085,17 +1162,32 @@ def render_balanceador_lineas(df_bdd, col_bdd):
     if _dos_celulas:
         _col1, _col2 = st.columns(2)
         with _col1:
-            _bloque_celula_balance(
+            _res_c1 = _bloque_celula_balance(
                 df_bdd, col_bdd, _piezas, "c1", "Célula 1", _horas_turno
             )
         with _col2:
-            _bloque_celula_balance(
+            _res_c2 = _bloque_celula_balance(
                 df_bdd, col_bdd, _piezas, "c2", "Célula 2", _horas_turno
             )
+        _resultados = [_res_c1, _res_c2]
     else:
-        _bloque_celula_balance(
+        _res_c1 = _bloque_celula_balance(
             df_bdd, col_bdd, _piezas, "c1", "Balance de línea", _horas_turno
         )
+        _resultados = [_res_c1]
+
+    _mensaje_wpp = (
+        _construir_mensaje_whatsapp(_resultados)
+        if st.session_state.get("rol") == "admin"
+        else ""
+    )
+    if _mensaje_wpp:
+        with st.container(border=True):
+            with st.expander("📲 Mensaje para WhatsApp (copiar y pegar)"):
+                st.caption(
+                    "Toca el ícono de copiar en la esquina del recuadro y pégalo en el chat del turno."
+                )
+                st.code(_mensaje_wpp, language=None)
 
 
 def obtener_datos_unificados(
