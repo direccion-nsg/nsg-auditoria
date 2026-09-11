@@ -90,11 +90,6 @@ def obtener_version_hoja(nombre_hoja):
     return st.session_state.get(f"version_hoja_{nombre_hoja}", 0)
 
 
-def invalidar_cache_hoja(nombre_hoja):
-    clave = f"version_hoja_{nombre_hoja}"
-    st.session_state[clave] = st.session_state.get(clave, 0) + 1
-
-
 def encontrar_columna(df, aliases, contiene_todos=None):
     if df.empty:
         return None
@@ -182,10 +177,15 @@ def obtener_cliente():
     return gspread.authorize(creds)
 
 
+@st.cache_resource
+def _abrir_libro_cacheado():
+    cliente = obtener_cliente()
+    return cliente.open_by_key(ID_LIBRO)
+
+
 def conectar_libro():
     try:
-        cliente = obtener_cliente()
-        return cliente.open_by_key(ID_LIBRO)
+        return _abrir_libro_cacheado()
     except Exception as e:
         if "429" in str(e):
             st.warning(
@@ -503,6 +503,64 @@ def calcular_resumen(
     df_resumen.columns = ["PIEZA", "SUBPROCESO", "PROGRAMADO", "AVANCE", "% REAL"]
     avance_global = round(df_final["% REAL"].mean(), 1)
     return avance_global, df_resumen
+
+
+def aplicar_capturas_locales(df_auditorias):
+    """Fusiona en memoria los guardados de esta sesión (session_state.capturas_locales)
+    con lo último leído de la hoja AUDITAR, sin tener que releerla completa por red.
+    Se auto-depura: en cuanto la lectura cacheada ya trae una fila (mismo
+    fecha+area+corte+pieza+subproceso), la entrada local deja de agregarse."""
+    _pendientes = st.session_state.get("capturas_locales", [])
+    if not _pendientes or df_auditorias.empty:
+        return df_auditorias
+
+    _col_fecha = encontrar_columna(df_auditorias, ["FECHA"])
+    _col_area = encontrar_columna(df_auditorias, ["AREA", "ÁREA"])
+    _col_corte = encontrar_columna(df_auditorias, ["CORTE"])
+    _col_pieza = encontrar_columna(df_auditorias, ["PIEZA"])
+    _col_sub = encontrar_columna(
+        df_auditorias,
+        ["SUBPROCESO", "SUB PROCESO", "SUB_PROCESO"],
+        contiene_todos=["SUB", "CESO"],
+    )
+    _col_real = encontrar_columna(df_auditorias, ["REAL"])
+    _col_hora = encontrar_columna(df_auditorias, ["HORA", "HORA REGISTRO"])
+    if not all([_col_fecha, _col_area, _col_corte, _col_pieza, _col_sub, _col_real]):
+        return df_auditorias
+
+    _ya_reales = set(
+        zip(
+            df_auditorias[_col_fecha],
+            df_auditorias[_col_area],
+            df_auditorias[_col_corte],
+            df_auditorias[_col_pieza],
+            df_auditorias[_col_sub],
+        )
+    )
+    _restantes = []
+    _filas_nuevas = []
+    for _cap in _pendientes:
+        _clave = (_cap["fecha"], _cap["area"], _cap["corte"], _cap["pieza"], _cap["sub"])
+        if _clave in _ya_reales:
+            continue  # ya llegó por una lectura real: se descarta de la lista local
+        _restantes.append(_cap)
+        _fila = {
+            _col_fecha: _cap["fecha"],
+            _col_area: _cap["area"],
+            _col_corte: _cap["corte"],
+            _col_pieza: _cap["pieza"],
+            _col_sub: _cap["sub"],
+            _col_real: str(_cap.get("real", 0)),
+        }
+        if _col_hora:
+            _fila[_col_hora] = _cap.get("hora", "")
+        _filas_nuevas.append(_fila)
+
+    st.session_state.capturas_locales = _restantes
+    if not _filas_nuevas:
+        return df_auditorias
+    df_extra = pd.DataFrame(_filas_nuevas)
+    return pd.concat([df_auditorias, df_extra], ignore_index=True)
 
 
 def obtener_auditorias_hoy(df_auditorias, fecha_sel, area_sel):
@@ -5897,6 +5955,7 @@ def main():
     df_programa, col_prog = preparar_dataframe("PROGRAMA", 1)
     df_bdd_raw, col_bdd = preparar_dataframe("BDD", 0)
     df_auditorias, _ = preparar_dataframe("AUDITAR", 0)
+    df_auditorias = aplicar_capturas_locales(df_auditorias)
     df_bdd = filtrar_bdd_activa(df_bdd_raw, col_bdd)
 
     # ── Header / pleca de la app ─────────────────────────────────────────
@@ -6493,8 +6552,9 @@ def main():
                                                         "corte": corte_sel,
                                                         "pieza": p_sel,
                                                         "sub": s_sel,
+                                                        "real": int(real),
+                                                        "hora": ahora_local().strftime("%H:%M:%S"),
                                                     })
-                                                    invalidar_cache_hoja("AUDITAR")
                                                     st.session_state.last_ops = ops
                                                     st.session_state.area_corte_completada = (
                                                         area_sel,
